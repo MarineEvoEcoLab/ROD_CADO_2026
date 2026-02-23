@@ -1,0 +1,1446 @@
+---
+title: "Reproducible analysis for Zyck et al. 2026"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(dev = "cairo_png")
+theme_set(theme_classic(base_family = "Liberation Sans"))
+```
+
+
+# Setup R and Environment
+This scripts assumes the directory structure of the github repository and that all demultiplexed sequencing reads are in the `./analysis` directory
+
+```{r}
+library(OutFLANK)
+library(bigsnpr)
+library(plyr)
+library(dplyr)
+library(stringr)
+library(reshape2)
+library(tidyr)
+library(ggplot2)
+library(plotrix)
+library(ggtext)
+library(ggsurvfit)
+library(patchwork)
+library(pcadapt)
+library(LEA)
+library(vegan)
+library(lfmm)
+library(vcfR)
+library(adegenet)
+library(ade4)
+library(tibble)
+library(data.table)
+library(topGO)
+```
+
+```{r}
+col_pal <- c("#0072B2", "#56B4E9",  "#F0E442", "#E69F00")
+
+```
+# Mortality Data
+```{r}
+df.mortality <- read.csv("data/oyster_survival_data.csv", stringsAsFactors = FALSE)
+# Keep only the columns needed for survival analysis and clean up
+df.mortality <- df.mortality %>%
+  select(Treatment, Time, Status) %>%
+  filter(!is.na(Time), !is.na(Status)) %>%
+  mutate(
+    Treatment = factor(
+      Treatment,
+      levels = c("CONCON", "STRCON", "CONROD", "STRROD")
+    ),
+    # Status: 1 = event (death), 0 = censored
+    Status = as.integer(Status)
+  )
+df.mortality$Treatment <- factor(df.mortality$Treatment, levels=c("CONCON", "STRCON", "CONROD", "STRROD"))
+```
+
+```{r}
+km_fit <- survfit2(Surv(Time, Status) ~ Treatment, data = df.mortality)
+
+km.plot <- km_fit %>%
+  ggsurvfit(linewidth = 0.9) +
+  add_confidence_interval() +
+  add_pvalue(
+    location   = "annotation",
+    x          = 1,
+    y          = 0.08,
+    size       = 3.5,
+    prepend_p  = TRUE
+  ) +
+  scale_color_manual(
+    values = col_pal,
+    labels = c("CONCON", "STRCON", "CONROD", "STRROD")
+  ) +
+  scale_fill_manual(
+    values = col_pal,
+    labels = c("CONCON", "STRCON", "CONROD", "STRROD")
+  ) +
+  scale_x_continuous(
+    breaks = c(0, 5, 10, 15, 20, 22),
+    limits = c(0, 24)
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1),
+    limits = c(0, 1)
+  ) +
+  labs(
+    title    = "Kaplan-Meier Survival Curves by Treatment",
+    #subtitle = "Oyster survival across four treatment groups",
+    x        = "Days",
+    y        = "Cumulative Survival Probability",
+    color    = "Treatment",
+    fill     = "Treatment"
+  ) +
+  theme_ggsurvfit_default() +
+  theme_classic(base_size = 13)+
+  theme(
+    plot.title      = element_text(face = "bold", size = 14),
+    plot.subtitle   = element_text(size = 11, colour = "grey40"),
+    legend.position = "right",
+    legend.title    = element_text(face = "bold"),
+    axis.title      = element_text(size = 11),
+    axis.text       = element_text(size = 10)
+  )
+
+km.plot
+```
+```{r}
+df.F.mortality <- df.mortality %>%
+  group_by(Treatment) %>%
+  summarise(
+    Total     = n(),
+    Deaths    = sum(Status == 1),
+    Mortality = Deaths / Total * 100,      # as percentage
+    SE        = sqrt((Mortality/100 * (1 - Mortality/100)) / Total) * 100
+  ) %>%
+  ungroup()
+
+
+df.F.mortality$Treatment <- factor(
+  df.F.mortality$Treatment,
+  levels = c("CONCON", "STRCON", "CONROD", "STRROD")
+)
+
+finalmort.plot <- ggplot(df.F.mortality, aes(x = Treatment, y = Mortality, fill = Treatment)) +
+  geom_col(width = 0.6, colour = "black", linewidth = 0.4, alpha=0.9) +
+  geom_errorbar(aes(ymin = Mortality - SE, ymax = Mortality + SE),width    = 0.2,linewidth = 0.7) +
+  scale_fill_manual(values = col_pal) +
+  scale_y_continuous(
+    limits = c(0, 80),
+    breaks = seq(0, 80, 10),
+    labels = function(x) paste0(x, "%"),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  labs(
+    title    = "Final Mortality by Treatment Group",
+    #subtitle = "Error bars represent ± 1 SE",
+    x        = "Treatment",
+    y        = "Mortality (%)"
+  ) +
+  theme_classic(base_size = 13) +
+  theme(
+    plot.title      = element_text(face = "bold", size = 14),
+    plot.subtitle   = element_text(size = 11, colour = "grey40"),
+    axis.title      = element_text(size = 12),
+    axis.text       = element_text(size = 11),
+    legend.position = "none"
+  )
+
+
+finalmort.plot
+```
+
+
+# Bioinformatics
+## SNP calling
+```{bash EVAL=FALSE}
+mamba env create -f ROD_CADO.yml
+mamba activate ROD_CADO
+
+cd ./analysis
+
+../scripts/dDocent_ngs dDocent.config
+```
+## SNP filtering
+```{bash EVAL=FALSE}
+mamba activate ROD_CADO
+
+cd ./analysis/raw.vcf
+../../scripts/PVCF_filter.sh TRS 36
+cd filtered
+vcftools --gzvcf SNP.TRS.TRSdp5g75.nDNA.g1.maf01.FIL.vcf.gz --minDP 10 --recode --recode-INFO-all --stdout | vcftools --vcf - --max-missing 1.0 --maf 0.01 --recode --recode-INFO-all --stdout | bcftools view --threads 24 -O z -o SNP.TRSdp10g1.FIL.vcf.gz
+bcftools --threads 40 -m2 -M2 -O z -o SNP.TRSdp10g1max2alleles.FIL.vcf.gz SNP.TRSdp10g1.FIL.vcf.gz
+plink2 --allow-extra-chr --make-bed --out TRSdp10g1.FIL --vcf SNP.TRSdp10g1max2alleles.FIL.vcf.gz
+```
+
+# Diversity Metrics
+
+## Nucleotide diversity
+Original analysis by Jacob Green, edits by JBP
+
+### Calculate from vcf files
+```{bash, EVAL =FALSE}
+source activate ROD_CADO
+mkdir -p ./analysis/diversity_statistics/nd
+cd ./analysis/diversity_statistics/nd
+
+cp ../../../treat_popmap .
+
+awk '$2 == "CON-CON" {print $1}' treat_popmap > con-con.txt 
+awk '$2 == "STR-CON" {print $1}' treat_popmap > str-con.txt 
+awk '$2 == "CON-ROD" {print $1}' treat_popmap > con-rod.txt 
+awk '$2 == "STR-ROD" {print $1}' treat_popmap > str-rod.txt
+
+```
+
+
+```{bash eval=FALSE}
+source activate ROD_CADO
+cd ./analysis/diversity_statistics/nd
+
+
+bcftools view --threads 20 ../../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz -S con-con.txt | vcftools --vcf - --window-pi 10000 --out con-con
+
+bcftools view --threads 20 ../../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz -S str-con.txt | vcftools --vcf - --window-pi 10000 --out str-con
+
+bcftools view --threads 20 ../../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz -S con-rod.txt | vcftools --vcf - --window-pi 10000 --out con-rod
+
+bcftools view --threads 20 ../../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz -S str-rod.txt | vcftools --vcf - --window-pi 10000 --out str-rod
+
+```
+
+### Load into R
+```{r, message=FALSE, warning=FALSE}
+pi.concon.dataframe<-read.table("analysis/diversity_statistics/nd/con-con.windowed.pi", sep="\t", header=T)
+pi.conrod.dataframe<-read.table("analysis/diversity_statistics/nd/con-rod.windowed.pi", sep="\t", header=T)
+pi.strcon.dataframe<-read.table("analysis/diversity_statistics/nd/str-con.windowed.pi", sep="\t", header=T)
+pi.strrod.dataframe<-read.table("analysis/diversity_statistics/nd/str-rod.windowed.pi", sep="\t", header=T)
+
+pi.concon.dataframe$Treatment <- "CONCON"
+pi.conrod.dataframe$Treatment <- "CONROD"
+pi.strcon.dataframe$Treatment <- "STRCON"
+pi.strrod.dataframe$Treatment <- "STRROD"
+
+pi.df <- rbind(pi.concon.dataframe,pi.conrod.dataframe,pi.strcon.dataframe, pi.strrod.dataframe)
+pi.df$Treatment <- factor(pi.df$Treatment, levels=c("CONCON", "STRCON", "CONROD", "STRROD"))
+```
+
+```{r}
+pi.plot <- ggplot(pi.df, aes(x=PI,y = Treatment))+
+  geom_violin(aes(color=Treatment,fill= Treatment), alpha=0.9) +
+  #stat_summary(fun=mean, geom="point", shape=23, size=4)+
+  #geom_dotplot(binaxis='y', stackdir='center', dotsize=0.005)+
+  #geom_boxplot(width=0.25,outlier.shape = 23, outlier.color = "black", fill = NA)+
+  geom_boxplot(width=0.25,outlier.shape = NA, outlier.color = NA, fill = NA)+
+  stat_summary(fun=mean, geom="point", shape=23, size=2)+
+  scale_fill_manual(values=col_pal)+
+  scale_color_manual(values=col_pal)+
+  scale_y_discrete(limits = rev(levels(pi.df$Treatment)))+
+  #ylab("Population/Line")+
+  labs(x=expression(pi)) +
+  ggtitle("Nucleotide Diversity by Treatment")+
+  theme_classic(base_size = 13) +
+  theme(axis.title.y = element_blank(),plot.title = element_text(face = "bold"),legend.title   = element_text(face = "bold")) 
+
+pi.plot
+```
+```{r}
+group_by(pi.df, Treatment) %>%
+  dplyr::summarise(
+    count = n(),
+    mean = mean(PI, na.rm = TRUE),
+    sd = sd(PI, na.rm = TRUE),
+    se=std.error(PI, na.rm = TRUE) )
+```
+
+
+```{r}
+
+aov.pi <- aov(PI ~ Treatment, pi.df)
+summary(aov.pi)
+
+posthoc.pi <- TukeyHSD(aov.pi)
+posthoc.pi
+
+
+```
+
+## Heterozygosity
+Analysis by Coline Caillon with edits by Jon Puritz
+
+```{bash eval=FALSE}
+source activate ROD_CADO
+mkdir -p ./analysis/diversity_statistics/het
+cd ./analysis/diversity_statistics/het
+
+popStats -y GT --file <(bcftools view --threads 40 ../../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz) --target 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19 > CONCON.het &
+
+popStats -y GT --file <(bcftools view --threads 40 ../../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz) --target 20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39 > STRCON.het &
+
+popStats -y GT --file <(bcftools view --threads 40 ../../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz) --target 40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59 > CONROD.het &
+
+popStats -y GT --file <(bcftools view --threads 40 ../../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz) --target 60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79 > STRROD.het
+
+```
+
+```{bash eval=FALSE}
+source activate ROD_CADO
+cd ./analysis/diversity_statistics/het
+
+# CON-CON
+cat <(echo -e "CHROM\tBIN_START\tBIN_END\tN_SITES\tN_SNPs\tHET\tTREAT") <(mawk '{if (NR>1) print $1 "\t" $2-1 "\t" $2 "\t" $4 "\t" $5 "\tCONCON"}' CONCON.het) > CONCON-treat.het
+
+# STR-CON
+cat <(echo -e "CHROM\tBIN_START\tBIN_END\tN_SITES\tN_SNPs\tHET\tTREAT") <(mawk '{if (NR>1) print $1 "\t" $2-1 "\t" $2 "\t" $4 "\t" $5 "\tSTRCON"}' STRCON.het) > STRCON-treat.het
+
+# CON-ROD
+cat <(echo -e "CHROM\tBIN_START\tBIN_END\tN_SITES\tN_SNPs\tHET\tTREAT") <(mawk '{if (NR>1) print $1 "\t" $2-1 "\t" $2 "\t" $4 "\t" $5 "\tCONROD"}' CONROD.het) > CONROD-treat.het
+
+# STR-ROD
+cat <(echo -e "CHROM\tBIN_START\tBIN_END\tN_SITES\tN_SNPs\tHET\tTREAT") <(mawk '{if (NR>1) print $1 "\t" $2-1 "\t" $2 "\t" $4 "\t" $5 "\tSTRROD"}' STRROD.het) > STRROD-treat.het
+
+```
+
+```{bash}
+source activate ROD_CADO
+cd ./analysis/diversity_statistics/het
+bedtools makewindows -g ../../../other_files/genome.file -w 10000 | mawk '!/NC_007175.2/' > 10kb.bed
+
+bedtools intersect -b CONCON-treat.het -a 10kb.bed -wa -wb | bedtools merge -d -1 -c 7,8 -o mean > CONCON.het.10kb.bed
+bedtools intersect -b CONROD-treat.het -a 10kb.bed -wa -wb | bedtools merge -d -1 -c 7,8 -o mean > CONROD.het.10kb.bed
+bedtools intersect -b STRCON-treat.het -a 10kb.bed -wa -wb | bedtools merge -d -1 -c 7,8 -o mean > STRCON.het.10kb.bed
+bedtools intersect -b STRROD-treat.het -a 10kb.bed -wa -wb | bedtools merge -d -1 -c 7,8 -o mean > STRROD.het.10kb.bed
+
+cat <(echo -e "CHROM\tBIN_START\tBIN_END\tEXP_HET\tOBS_HET\tTREATMENT") <(mawk '{if (NR>1)print $0 "\tCONCON"}' CONCON.het.10kb.bed) <(mawk '{if (NR>1)print $0 "\tCONROD"}' CONROD.het.10kb.bed) <(mawk '{if (NR>1)print $0 "\tSTRCON"}' STRCON.het.10kb.bed) <(mawk '{if (NR>1)print $0 "\tSTRROD"}' STRROD.het.10kb.bed)  > treat.10kb.txt
+
+```
+
+### Load into R
+```{r, message=FALSE, warning=FALSE}
+het.df <- read.table("analysis/diversity_statistics/het/treat.10kb.txt", sep="\t", header=T)
+het.df$Treatment <- factor(het.df$TREATMENT, levels=c("CONCON", "STRCON", "CONROD", "STRROD"))
+```
+
+```{r}
+het.plot <- ggplot(het.df, aes(x=OBS_HET,y = Treatment))+
+  geom_violin(aes(color=Treatment,fill= Treatment), alpha =0.9) +
+  #geom_boxplot(width=0.25,outlier.shape = 23, outlier.color = "black", fill = NA)+
+  geom_boxplot(width=0.25,outlier.shape = NA, outlier.color = NA, fill = NA)+
+  stat_summary(fun=mean, geom="point", shape=23, size=2)+
+  scale_fill_manual(values=col_pal)+
+  scale_color_manual(values=col_pal)+
+  scale_y_discrete(limits = rev(levels(het.df$Treatment)))+
+  labs(x="Observed Heterozygosity") +
+  ggtitle("Observed Heterozygosity by Treatment")+
+  theme_classic(base_size = 13) +
+    theme(axis.title.y = element_blank(),plot.title = element_text(face = "bold"),legend.title   = element_text(face = "bold")) 
+het.plot
+```
+```{r}
+group_by(het.df, Treatment) %>%
+  dplyr::summarise(
+    count = n(),
+    mean = mean(OBS_HET, na.rm = TRUE),
+    sd = sd(OBS_HET, na.rm = TRUE),
+    se=std.error(OBS_HET) )
+```
+
+
+```{r}
+
+aov.het <- aov(OBS_HET ~ Treatment, het.df)
+summary(aov.het)
+
+posthoc.het <- TukeyHSD(aov.het)
+posthoc.het
+
+
+```
+
+## Tajima's D
+Code by Megan Guidry with edits by Jon Puritz
+```{bash, eval = FALSE}
+mamba create -n vkrc python=3.8 numpy scipy
+source activate vkrc
+pip install VCF-kit
+mamba install bcftools
+```
+
+
+```{bash eval=FALSE}
+source activate vkrc
+mkdir -p ./analysis/diversity_statistics/td
+cd ./analysis/diversity_statistics/td
+
+bcftools view --threads 20 ../../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz -S ../nd/con-con.txt | vk tajima 10000 10000 - > con-con.tajima &
+
+bcftools view --threads 20 ../../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz -S ../nd/str-con.txt | vk tajima 10000 10000 - > str-con.tajima &
+
+bcftools view --threads 20 ../../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz -S ../nd/con-rod.txt | vk tajima 10000 10000 - > con-rod.tajima &
+
+bcftools view --threads 20 ../../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz -S ../nd/str-rod.txt | vk tajima 10000 10000 - > str-rod.tajima
+```
+
+
+```{bash}
+source activate ROD_CADO
+cd ./analysis/diversity_statistics/td
+cat <(echo -e "CHROM\tBIN_START\tBIN_END\tN_SITES\tN_SNPs\tTAJD\tTREATMENT") <(mawk '{if (NR>1)print $0 "\tCONCON"}' con-con.tajima) <(mawk '{if (NR>1)print $0 "\tSTRCON"}' str-con.tajima) <(mawk '{if (NR>1)print $0 "\tCONROD"}' con-rod.tajima) <(mawk '{if (NR>1)print $0 "\tSTRROD"}' str-rod.tajima) > treatment.tajima
+```
+
+### Load into R
+```{r, message=FALSE, warning=FALSE}
+tajd.df <- read.table("analysis/diversity_statistics/td/treatment.tajima", sep="\t", header=T)
+tajd.df$Treatment <- factor(tajd.df$TREATMENT, levels=c("CONCON", "STRCON", "CONROD", "STRROD"))
+```
+
+```{r}
+tajd.plot <- ggplot(tajd.df, aes(x=TAJD,y = Treatment))+
+  geom_violin(aes(color=Treatment,fill= Treatment)) +
+  #stat_summary(fun=mean, geom="point", shape=23, size=4)+
+  #geom_dotplot(binaxis='y', stackdir='center', dotsize=0.005)+
+  #geom_boxplot(width=0.25,outlier.shape = 23, outlier.color = "black", fill = NA)+
+  geom_boxplot(width=0.25,outlier.shape = NA, outlier.color = NA, fill = NA)+
+  stat_summary(fun=mean, geom="point", shape=23, size=2)+
+  scale_fill_manual(values=col_pal)+
+  scale_color_manual(values=col_pal)+
+  scale_y_discrete(limits = rev(levels(tajd.df$Treatment)))+
+  #ylab("Population/Line")+
+  labs(x = expression("Tajima's "*italic(D))) +
+  ggtitle(expression("Tajima's "*italic(D)*" by Treatment")) +
+  theme_classic(base_size = 13) +
+  theme(axis.title.y = element_blank(), text = element_text(family = "Liberation Sans"))
+
+tajd.plot
+
+
+```
+
+```{r}
+group_by(tajd.df, Treatment) %>%
+  dplyr::summarise(
+    count = n(),
+    mean = mean(TAJD, na.rm = TRUE),
+    sd = sd(TAJD, na.rm = TRUE),
+    se=std.error(TAJD) )
+```
+
+```{r}
+
+aov.tajd <- aov(TAJD ~ Treatment, tajd.df)
+summary(aov.tajd)
+
+posthoc.tajd <- TukeyHSD(aov.tajd)
+posthoc.tajd
+
+```
+
+# PCA
+Original Code by Jacob Green, edits by Jon Puritz
+```{bash, eval = FALSE}
+cd analysis/raw.vcf/filtered/
+plink2 --bfile TRSdp10g1.FIL --make-bed --allow-extra-chr --out TRSdp10g1.FIL.ALL --maf 0.05
+
+plink2 --bfile TRSdp10g1.FIL --make-bed --allow-extra-chr --keep <(cut -f1 ../../popmap | grep -v CH | grep -v R[1,2,3] ) --out TRSdp10g1.FIL.CMB --maf 0.05
+
+plink2 --bfile TRSdp10g1.FIL --make-bed --allow-extra-chr --keep <(cut -f1 ../../popmap | grep -v CH | grep -v RH ) --out TRSdp10g1.FIL.ROD --maf 0.05
+
+plink2 --bfile TRSdp10g1.FIL --make-bed --allow-extra-chr --keep <(cut -f1 ../../popmap | grep -v R ) --out TRSdp10g1.FIL.STR --maf 0.05
+```
+
+```{r}
+#Set path to file
+path_to_file <- "analysis/raw.vcf/filtered/TRSdp10g1.FIL.bed"
+#Load file to filename variable
+filename <- read.pcadapt(path_to_file, type = "bed")
+
+resld <- pcadapt(filename, K = 10, LD.clumping = list(size = 500, thr = 0.2))
+plot(resld, option = "screeplot")
+```
+
+```{r}
+poplist.names <- c(rep("CONCON",20),rep("STRCON",20),rep("CONROD",20),rep("STRROD",20))
+poplist.names
+```
+
+```{r}
+df.pca <- as.data.frame(resld$scores)
+colnames(df.pca) <- paste0("PC", 1:ncol(df.pca))
+
+df.pca$Treatment <- poplist.names
+df.pca$Treatment <- factor(df.pca$Treatment, levels=c("CONCON", "STRCON", "CONROD", "STRROD"))
+
+variance_explained <- res$singular.values^2 / sum(res$singular.values^2) * 100
+cat("Variance explained by each PC:\n")
+print(round(variance_explained, 2))
+
+pca.plot <- ggplot(df.pca, aes(x = PC1, y = PC2, colour = Treatment)) +
+  geom_point(size = 2.5, alpha = 0.85) +
+  labs(
+    title = "PCA of Genetic Variation",
+    x = paste0("PC1 (", round(variance_explained[1], 1), "%)"),
+    y = paste0("PC2 (", round(variance_explained[2], 1), "%)")
+  ) +
+  theme_classic(base_size = 13) +
+  scale_fill_manual(values=col_pal)+
+  scale_color_manual(values=col_pal)+
+  theme(
+    plot.title     = element_text(face = "bold"),
+    legend.title   = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+pca.plot
+```
+
+# Figure 1
+```{bash}
+mkdir -p figures
+```
+
+```{r}
+png(filename="figures/Figure1.png", type="cairo",units="px", width=5600, height=3000, res=300, bg="transparent")
+
+gen_div.plot <- (pi.plot / het.plot)
+
+(finalmort.plot + pca.plot)/(km.plot + gen_div.plot) + plot_layout(guides="collect") + plot_annotation(tag_levels = 'A')
+dev.off()
+```
+
+# Outlier Detection
+Original analysis by Amy Zyck, edits by JBP
+
+## Setup
+
+### Prepare genotype file for LFMM2
+```{bash eval=FALSE}
+source activate ROD_CADO
+mkdir -p ./analysis/outlier_detection
+cd ./analysis/outlier_detection
+pwd
+
+plink2 --vcf ../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz --allow-extra-chr --min-alleles 2 --max-alleles 2 --export A --out snp_rod
+cut -f7- snp_rod.raw | tail -n +2 | sed 's/NA/9/g' > snp_rod.lfmm
+rm snp_rod.raw
+```
+
+### Prepare environmental strata
+```{bash eval=FALSE}
+cd ./analysis/outlier_detection
+cp -f ../../other_files/strata_ROD_tab .
+```
+
+### Create SNP index file
+```{bash eval=FALSE}
+source activate ROD_CADO
+cd ./analysis/outlier_detection
+
+bcftools view -m 2 -M 2 ../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz | bcftools query -f '%CHROM\t%POS\n'  > totalloci
+NUM=(`cat totalloci | wc -l`)
+paste <(seq 1 $NUM) totalloci > loci.plus.index
+```
+
+## Run LFMM2
+
+
+### Load genotype and environmental data
+```{r}
+clim.env_rod <- read.table("analysis/outlier_detection/strata_ROD_tab", header=TRUE)
+gen_rod <- fread("analysis/outlier_detection/snp_rod.lfmm", header = FALSE)
+row.names(gen_rod) <- clim.env_rod$Individual
+
+CADO <- clim.env_rod$CADO
+DIS <- clim.env_rod$Disease
+COMB_BIN <- clim.env_rod$Combined_Bin
+```
+
+### LFMM ridge - Stress (CADO)
+```{r}
+oys_rod_CADO.lfmm <- lfmm_ridge(Y=gen_rod, X=CADO, K=4)
+oys_rod_CADO.pv <- lfmm_test(Y=gen_rod, X=CADO, lfmm=oys_rod_CADO.lfmm, calibrate="gif")
+oys_rod_CADO.pv$gif
+```
+
+```{r}
+zscore_rod_CADO <- oys_rod_CADO.pv$score[,1]
+adj.pv_rod_CADO <- pchisq(zscore_rod_CADO^2/0.98, df=1, lower = FALSE)
+oys_rod_CADO.qv <- qvalue(adj.pv_rod_CADO)$qvalues
+oys_rod_CADO.FDR.1 <- as.vector(which(oys_rod_CADO.qv < 0.1))
+length(oys_rod_CADO.FDR.1)
+```
+
+```{r}
+cat("", file = "analysis/outlier_detection/outliers_lfmm2_CADO_098.txt")
+invisible(lapply(oys_rod_CADO.FDR.1, write, "analysis/outlier_detection/outliers_lfmm2_CADO_098.txt", append=TRUE))
+```
+
+### LFMM ridge - Disease
+```{r}
+oys_rod_DIS.lfmm <- lfmm_ridge(Y=gen_rod, X=DIS, K=4)
+oys_rod_DIS.pv <- lfmm_test(Y=gen_rod, X=DIS, lfmm=oys_rod_DIS.lfmm, calibrate="gif")
+oys_rod_DIS.pv$gif
+```
+
+```{r}
+zscore_rod_DIS <- oys_rod_DIS.pv$score[,1]
+adj.pv_rod_DIS <- pchisq(zscore_rod_DIS^2/0.98, df=1, lower = FALSE)
+oys_rod_DIS.qv <- qvalue(adj.pv_rod_DIS)$qvalues
+oys_rod_DIS.FDR.1 <- as.vector(which(oys_rod_DIS.qv < 0.1))
+length(oys_rod_DIS.FDR.1)
+```
+
+```{r}
+cat("", file = "analysis/outlier_detection/outliers_lfmm2_DIS_098.txt")
+invisible(lapply(oys_rod_DIS.FDR.1, write, "analysis/outlier_detection/outliers_lfmm2_DIS_098.txt", append=TRUE))
+```
+
+### LFMM ridge - Combined treatment (binary)
+```{r}
+oys_rod_CB.lfmm <- lfmm_ridge(Y=gen_rod, X=COMB_BIN, K=4)
+oys_rod_CB.pv <- lfmm_test(Y=gen_rod, X=COMB_BIN, lfmm=oys_rod_CB.lfmm, calibrate="gif")
+oys_rod_CB.pv$gif
+```
+
+```{r}
+oys_rod_CB.qv <- qvalue(oys_rod_CB.pv$calibrated.pvalue)$qvalues
+oys_rod_CB.FDR.1 <- which(oys_rod_CB.qv < 0.1)
+length(oys_rod_CB.FDR.1)
+```
+
+```{r}
+cat("", file = "analysis/outlier_detection/outliers_lfmm2_CB.txt")
+invisible(lapply(oys_rod_CB.FDR.1, write, "analysis/outlier_detection/outliers_lfmm2_CB.txt", append=TRUE))
+```
+
+## Combine outliers and create BED file
+
+### Map SNP indices to genomic positions
+```{bash eval=FALSE}
+source activate ROD_CADO
+mkdir -p analysis/outlier_detection/results
+cd ./analysis/outlier_detection
+
+cat outliers_lfmm2_CADO_098.txt | parallel "grep -w ^{} loci.plus.index" | cut -f2,3 > ./results/outliers_lfmm2_CADO_098.loci.txt
+cat outliers_lfmm2_DIS_098.txt | parallel "grep -w ^{} loci.plus.index" | cut -f2,3 > ./results/outliers_lfmm2_DIS_098.loci.txt
+cat outliers_lfmm2_CB.txt | parallel "grep -w ^{} loci.plus.index" | cut -f2,3 > ./results/outliers_lfmm2_CB.loci.txt
+
+cat ./results/outliers_lfmm2_CB.loci.txt ./results/outliers_lfmm2_CADO_098.loci.txt ./results/outliers_lfmm2_DIS_098.loci.txt > ./results/all_lfmm2_outliers
+awk '{print $1 "\t" $2-1 "\t" $2}' ./results/all_lfmm2_outliers | bedtools sort -i - > ./results/outliers_lfmm2.bed
+```
+
+### Create outlier VCF for validation
+```{bash eval=FALSE}
+source activate ROD_CADO
+cd ./analysis/outlier_detection
+
+bcftools index --threads 20 ../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz
+
+bcftools view --threads 20 -R ./results/outliers_lfmm2_CB.loci.txt ../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz -O b -o outliers_lfmm2_CB.recode.vcf
+```
+
+## Validate outliers with PCA and PERMANOVA
+
+```{r}
+strata_ROD <- read.table("analysis/outlier_detection/strata_ROD_tab", header=TRUE)
+pop <- poplist.names
+Combined <- c(rep("No", 20),rep("No", 20),rep("No", 20),rep("Yes", 20))
+```
+
+```{r}
+vcf_out_lfmm_CB <- read.vcfR("analysis/outlier_detection/outliers_lfmm2_CB.recode.vcf")
+rad_out_lfmm_CB.filt <- vcfR2genind(vcf_out_lfmm_CB, strata = strata_ROD, pop = pop)
+```
+
+```{r}
+x_out_lfmm_CB <- scaleGen(rad_out_lfmm_CB.filt, NA.method = "mean")
+out_lfmm_CB_pca <- dudi.pca(x_out_lfmm_CB, center = FALSE, scale = FALSE, scannf = FALSE, nf = 4)
+pc_scores_CB <- out_lfmm_CB_pca$li
+```
+
+```{r}
+permanova_result_CB <- adonis2(pc_scores_CB ~ pop, method = "euclidean")
+print(permanova_result_CB)
+```
+
+```{r}
+permanova_result_CB_combined <- adonis2(pc_scores_CB ~ Combined, method = "euclidean")
+print(permanova_result_CB_combined)
+```
+
+```{r}
+
+pca_data_CB <- data.frame(
+  PC1 = pc_scores_CB[,1],
+  PC2 = pc_scores_CB[,2],
+  Treatment = factor(poplist.names, levels = c("CONCON", "STRCON", "CONROD", "STRROD"))
+)
+
+p_value_CB <- permanova_result_CB$`Pr(>F)`[1]
+eigenvalues_CB <- eigen(cov(pca_data_CB[, c("PC1", "PC2")]))$values
+pve_CB <- eigenvalues_CB / sum(eigenvalues_CB) * 100
+
+outlier.pca.plot <- ggplot(pca_data_CB, aes(x = PC1, y = PC2, color = Treatment)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  stat_ellipse() +
+  scale_color_manual(values = col_pal) +
+  labs(
+    title = "PCA of Combined Treatment Outlier SNPs from LFMM",
+    x = paste0("PC1 (", round(pve_CB[1], 1), "%)"),
+    y = paste0("PC2 (", round(pve_CB[2], 1), "%)")
+  ) +
+  annotate("text", x = -Inf, y = -Inf,
+           label = paste("PERMANOVA p =", format(p_value_CB, digits = 2)),
+           hjust = -0.1, vjust = -1, size = 3.5) +
+  theme_classic(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+outlier.pca.plot
+```
+
+# FST and OutFLANK
+```{bash, eval = FALSE}
+source activate ROD_CADO
+mkdir -p ./analysis/FST
+cd ./analysis/FST
+
+plink2 --bfile ../raw.vcf/filtered/TRSdp10g1.FIL --make-bed --allow-extra-chr --out TRSdp10g1.FIL.ALL --maf 0.05
+
+```
+
+
+
+
+
+
+
+
+```{r}
+# Read in bedfile
+rds <- snp_readBed("./analysis/raw.vcf/filtered/TRSdp10g1.FIL.ALL.bed", backingfile = tempfile())
+```
+
+```{r}
+full_bed <- snp_attach(rds)
+G <- full_bed$genotypes
+CHR <- full_bed$map$chromosome
+POS <- full_bed$map$physical.pos
+NCORES <- nb_cores()
+```
+
+```{r}
+svd <- snp_autoSVD(G, as.integer(factor(CHR)), POS, ncores = NCORES,min.mac =8,size=10)
+```
+
+```{r}
+write(paste(CHR[attr(svd, "subset")],
+            POS[attr(svd, "subset")], sep='\t'),
+      "./analysis/FST/ThinnedSNPs.maskedPCs.txt")
+```
+
+```{bash, eval = FALSE}
+source activate ROD_CADO
+cd ./analysis/FST
+rm -f random.50k.snps
+
+cut -f1 ThinnedSNPs.maskedPCs.txt| uniq | parallel "grep {} ThinnedSNPs.maskedPCs.txt | shuf  2>/dev/null | shuf 2>/dev/null | shuf 2>/dev/null| head -5000" >> random.50k.snps
+
+```
+
+```{bash, eval = FALSE}
+source activate ROD_CADO
+cd ./analysis/FST
+
+plink2 --bfile ../raw.vcf/filtered/TRSdp10g1.FIL --make-bed --allow-extra-chr --extract bed0 <(mawk '{print $1"\t"$2-1"\t"$2}' random.50k.snps ) --out random50k
+
+mawk 'NR==1{print "IND\tPOP"};NR >0 {print $0}' ../popmap > popmap.txt
+```
+
+```{r}
+rds.random <- snp_readBed("random.50k.snps", backingfile = tempfile())
+
+random <- snp_attach(rds.random)
+G.r <- random$genotypes
+CHR.r <- random$map$chromosome
+POS.r <- random$map$physical.pos
+
+```
+
+```{r}
+
+popmap <- read.table("./analysis/FST/popmap.txt", header=TRUE)
+popmap$TREAT <- c(rep("CON",20),rep("STR",20),rep("ROD",20),rep("STRROD",20))
+
+
+my_fst <- MakeDiploidFSTMat(G[], locusNames = paste0(CHR,"_", POS), popNames = popmap$TREAT)
+
+my_fst.r <- MakeDiploidFSTMat(G.r[], locusNames = paste0(CHR.r,"_", POS.r), popNames = popmap$TREAT)
+
+
+
+
+```
+
+
+
+
+```{r}
+save(my_fst, file = "./analysis/FST/FST_data.RData")
+```
+
+```{r}
+load("./analysis/FST/FST_data.RData")
+
+```
+
+
+```{r}
+out_trim <- OutFLANK(my_fst[attr(svd, which="subset"),], NumberOfSamples=4, qthreshold = 0.1, Hmin = 0.1)
+
+OutFLANKResultsPlotter(out_trim, withOutliers = TRUE,
+                       NoCorr = TRUE, Hmin = 0.1, binwidth = 0.001, Zoom =
+                         FALSE, RightZoomFraction = 0.05, titletext = NULL)
+
+hist(out_trim$results$pvaluesRightTail)
+
+qthres <- 0.1
+
+P1 <- pOutlierFinderChiSqNoCorr(my_fst, Fstbar = out_trim$FSTNoCorrbar, 
+                                   dfInferred = out_trim$dfInferred, qthreshold = qthres, Hmin=0.1)
+
+P1 <- P1[order(as.numeric(rownames(P1))),,drop=FALSE]                  
+hist(P1$pvaluesRightTail)
+```
+
+
+```{r}
+plot.df<- setNames(data.frame(matrix(ncol = 8, nrow = length(P1$LocusName))), c("CHR", "CHRR", "BP", "SNP", "P", "F", "Q", "Outlier"))
+plot.df$CHR <-as.integer(as.factor(CHR))
+plot.df$CHRR <- CHR
+plot.df$SNP <-P1$LocusName
+plot.df$BP <- POS
+plot.df$P <- P1$pvalues
+plot.df$Q <- P1$qvalues
+plot.df$F <- P1$FST
+plot.df$Outlier <- P1$OutlierFlag
+plot.df <- plot.df[which(plot.df$Outlier == TRUE | plot.df$Outlier == FALSE),]
+
+
+```
+
+```{r}
+withr::with_options(c(scipen = 10), write(paste(plot.df$CHRR,plot.df$BP-1,plot.df$BP,plot.df$F,plot.df$Outlier, sep='\t'), "./analysis/FST/FST_Outflank.bed"))
+```
+
+```{bash}
+source activate ROD_CADO
+cd ./analysis/FST
+bedtools intersect -b <(sort -k 1,1 -k2,2n FST_Outflank.bed) -a <(sort -k 1,1 -k2,2n ../diversity_statistics/het/10kb.bed) -wa -wb -sorted  |bedtools merge -d -1 -c 7,8 -o mean,distinct | mawk 'BEGIN {print "CHROM\tBIN_START\tBIN_END\tWEIGHTED_FST\tOUTLIER"} { if ($0 ~ /TRUE/) {print $1 "\t" $2 "\t" $3 "\t" $4 "\tTRUE"} else {print $0}}' > OF_fst.10kb.bed
+
+cat <(echo -e "CHROM\tBIN_START\tBIN_END\tWEIGHTED_FST\tOUTLIER") OF_fst.10kb.bed <(grep TRUE FST_Outflank.bed) > OF_fst.10kb.txt
+
+
+
+cat <(echo -e "CHROM\tBIN_START\tBIN_END\tWEIGHTED_FST\tOUTLIER") FST_Outflank.bed > outlier_fst.txt
+```
+
+
+```{r}
+fst <- fread("./analysis/FST/outlier_fst.txt", header = TRUE)
+SNP<-c(1:(nrow(fst)))
+mydf<-data.frame(SNP,fst)
+mydf$CHR <- mydf$CHROM
+mydf %>% 
+  mutate(CHR = str_replace(CHR, "NC_035780.1", "1")) %>% 
+  mutate(CHR = str_replace(CHR, "NC_035781.1", "2")) %>% 
+  mutate(CHR = str_replace(CHR, "NC_035782.1", "3")) %>% 
+  mutate(CHR = str_replace(CHR, "NC_035783.1", "4")) %>% 
+  mutate(CHR = str_replace(CHR, "NC_035784.1", "5")) %>% 
+  mutate(CHR = str_replace(CHR, "NC_035785.1", "6")) %>% 
+  mutate(CHR = str_replace(CHR, "NC_035786.1", "7")) %>% 
+  mutate(CHR = str_replace(CHR, "NC_035787.1", "8")) %>%
+  mutate(CHR = str_replace(CHR, "NC_035788.1", "9")) %>% 
+  mutate(CHR = str_replace(CHR, "NC_035789.1", "10"))  -> mydf
+mydf$CHR <- as.numeric(mydf$CHR)  
+
+# Step 1: Compute chromosome-level metrics
+chr_offsets <- mydf %>%
+  group_by(CHR) %>%
+  summarize(
+    minbp = min(BIN_START, na.rm = TRUE),
+    maxbp = max(BIN_END, na.rm = TRUE),
+    nrows = n()
+  ) %>%
+  mutate(
+    offset = cumsum(nrows) - nrows,
+    bp_range = ifelse(maxbp == minbp, 1, maxbp - minbp)
+  )
+
+# Step 2: Join offset info into the original dataframe and compute BPcum
+don <- mydf %>%
+  left_join(chr_offsets, by = "CHR") %>%
+  mutate(
+    scaled_bp = (as.numeric(BIN_START) - as.numeric(minbp)) * as.numeric(nrows) / as.numeric(bp_range),
+    BPcum = scaled_bp + as.numeric(offset)
+  )
+
+# Step 3: Axis label positions
+axisdf <- don %>%
+  group_by(CHR) %>%
+  summarize(center = mean(BPcum, na.rm = TRUE))
+
+
+
+
+m2<- ggplot(don, aes(x=BPcum, y=WEIGHTED_FST)) +
+  geom_point( aes(color=as.factor(CHR)), alpha=0.25, size=0.5) +
+  geom_point(data=subset(don, OUTLIER==TRUE),aes(color=as.factor(CHR)),shape = 17,alpha=1,size=1.75) +
+  scale_color_manual(values = rep(c("#7d5577", "#52374e"), 5 )) +
+  scale_x_continuous( label = axisdf$CHR, breaks= axisdf$center ,expand = c(0,0)) +
+  scale_y_continuous(expand = c(0,0),limits=c(min(don$WEIGHTED_FST-0.001,na.rm=TRUE),0.5))+      
+  theme(axis.title.y = element_markdown())+ 
+  guides(colour = "none",alpha="none", fill="none") +
+  labs(x = "Chromosome", y = "*F<sub>ST</sub>*") +
+  theme_classic() +
+  theme(axis.title.y = element_markdown()) 
+    
+
+png(filename="figures/Figure.X.FST.man.png", type="cairo",units="px", width=5600, height=3000, res=300, bg="transparent")
+m2
+null <- dev.off()
+
+```
+
+# Outlier Overlap and Annotation
+Original analysis by Amy Zyck, edits by JBP
+
+## Extract OutFLANK outliers to BED format
+```{bash eval=FALSE}
+source activate ROD_CADO
+cd ./analysis/FST
+
+awk '$5=="TRUE"{print $1"\t"$2"\t"$3}' FST_Outflank.bed > Outflank_outliers.bed
+```
+
+## Compare overlapping outlier SNPs between LFMM2 and OutFLANK
+
+```{bash eval=FALSE}
+source activate ROD_CADO
+cd ./analysis
+
+# Sort each bed file
+sort ./FST/Outflank_outliers.bed > ./FST/outliers_outflank_sorted.txt
+sort ./outlier_detection/results/outliers_lfmm2.bed > ./outlier_detection/results/outliers_lfmm2_sorted.txt
+```
+
+```{bash eval=FALSE}
+cd ./analysis
+
+# Shared outlier SNPs between OutFLANK and LFMM2
+comm -12 ./FST/outliers_outflank_sorted.txt ./outlier_detection/results/outliers_lfmm2_sorted.txt | wc -l
+comm -12 ./FST/outliers_outflank_sorted.txt ./outlier_detection/results/outliers_lfmm2_sorted.txt
+```
+
+## Validate all LFMM2 outliers with PCA and PERMANOVA
+
+### Create VCF for all LFMM2 outliers
+```{bash eval=FALSE}
+source activate ROD_CADO
+cd ./analysis/outlier_detection
+
+bcftools view --threads 20 -R ./results/outliers_lfmm2.bed ../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz > outliers_lfmm2_all.recode.vcf
+
+```
+
+### Load and analyze all LFMM2 outliers
+```{r}
+vcf_out_lfmm_all <- read.vcfR("analysis/outlier_detection/outliers_lfmm2_all.recode.vcf")
+rad_out_lfmm_all.filt <- vcfR2genind(vcf_out_lfmm_all, strata = strata_ROD, pop = pop)
+```
+
+```{r}
+x_out_lfmm_all <- scaleGen(rad_out_lfmm_all.filt, NA.method = "mean")
+out_lfmm_all_pca <- dudi.pca(x_out_lfmm_all, center = FALSE, scale = FALSE, scannf = FALSE, nf = 4)
+pc_scores_lfmm_all <- out_lfmm_all_pca$li
+```
+
+```{r}
+permanova_result_lfmm_all <- adonis2(pc_scores_lfmm_all ~ pop, method = "euclidean")
+print(permanova_result_lfmm_all)
+```
+
+```{r}
+permanova_result_lfmm_all_combined <- adonis2(pc_scores_lfmm_all ~ Combined, method = "euclidean")
+print(permanova_result_lfmm_all_combined)
+```
+
+```{r}
+pca_data_lfmm_all <- data.frame(
+  PC1 = pc_scores_lfmm_all[,1],
+  PC2 = pc_scores_lfmm_all[,2],
+  Treatment = factor(poplist.names, levels = c("CONCON", "STRCON", "CONROD", "STRROD"))
+)
+
+p_value_lfmm_all <- permanova_result_lfmm_all$`Pr(>F)`[1]
+eigenvalues_lfmm_all <- eigen(cov(pca_data_lfmm_all[, c("PC1", "PC2")]))$values
+pve_lfmm_all <- eigenvalues_lfmm_all / sum(eigenvalues_lfmm_all) * 100
+
+outlier.pca.lfmm.all.plot <- ggplot(pca_data_lfmm_all, aes(x = PC1, y = PC2, color = Treatment)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  stat_ellipse() +
+  scale_color_manual(values = col_pal) +
+  labs(
+    title = "PCA of All LFMM2 Outlier SNPs",
+    x = paste0("PC1 (", round(pve_lfmm_all[1], 1), "%)"),
+    y = paste0("PC2 (", round(pve_lfmm_all[2], 1), "%)")
+  ) +
+  annotate("text", x = -Inf, y = -Inf,
+           label = paste("PERMANOVA p =", format(p_value_lfmm_all, digits = 2)),
+           hjust = -0.1, vjust = -1, size = 3.5) +
+  theme_classic(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+outlier.pca.lfmm.all.plot
+```
+
+## Validate OutFLANK outliers with PCA and PERMANOVA
+
+### Create VCF for OutFLANK outliers
+```{bash eval=FALSE}
+source activate ROD_CADO
+cd ./analysis/FST
+
+bcftools view --threads 20 -R Outflank_outliers.bed ../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz > outliers_Outflank.recode.vcf
+```
+
+### Load and analyze OutFLANK outliers
+```{r}
+vcf_out_outflank <- read.vcfR("analysis/FST/outliers_Outflank.recode.vcf")
+rad_out_outflank.filt <- vcfR2genind(vcf_out_outflank, strata = strata_ROD, pop = pop)
+```
+
+```{r}
+x_out_outflank <- scaleGen(rad_out_outflank.filt, NA.method = "mean")
+out_outflank_pca <- dudi.pca(x_out_outflank, center = FALSE, scale = FALSE, scannf = FALSE, nf = 4)
+pc_scores_outflank <- out_outflank_pca$li
+```
+
+```{r}
+permanova_result_outflank <- adonis2(pc_scores_outflank ~ pop, method = "euclidean")
+print(permanova_result_outflank)
+```
+
+```{r}
+pca_data_outflank <- data.frame(
+  PC1 = pc_scores_outflank[,1],
+  PC2 = pc_scores_outflank[,2],
+  Treatment = factor(poplist.names, levels = c("CONCON", "STRCON", "CONROD", "STRROD"))
+)
+
+p_value_outflank <- permanova_result_outflank$`Pr(>F)`[1]
+eigenvalues_outflank <- eigen(cov(pca_data_outflank[, c("PC1", "PC2")]))$values
+pve_outflank <- eigenvalues_outflank / sum(eigenvalues_outflank) * 100
+
+outlier.pca.outflank.plot <- ggplot(pca_data_outflank, aes(x = PC1, y = PC2, color = Treatment)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  stat_ellipse() +
+  scale_color_manual(values = col_pal) +
+  labs(
+    title = "PCA of OutFLANK Outlier SNPs",
+    x = paste0("PC1 (", round(pve_outflank[1], 1), "%)"),
+    y = paste0("PC2 (", round(pve_outflank[2], 1), "%)")
+  ) +
+  annotate("text", x = -Inf, y = -Inf,
+           label = paste("PERMANOVA p =", format(p_value_outflank, digits = 2)),
+           hjust = -0.1, vjust = -1, size = 3.5) +
+  theme_classic(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+outlier.pca.outflank.plot
+```
+
+## PCA of combined LFMM2 and OutFLANK outliers
+
+### Create combined outlier BED and VCF
+```{bash eval=FALSE}
+source activate ROD_CADO
+cd ./analysis
+
+# Merge LFMM2 and OutFLANK outlier BEDs, sort and deduplicate
+cat ./outlier_detection/results/outliers_lfmm2.bed ./FST/Outflank_outliers.bed | bedtools sort -i - | bedtools merge -i - > ./outlier_detection/results/outliers_lfmm2_outflank_combined.bed
+
+bcftools view --threads 20 -R ./outlier_detection/results/outliers_lfmm2_outflank_combined.bed ./raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz -O v -o ./outlier_detection/outliers_combined.recode.vcf
+```
+
+### Load and analyze combined outliers
+```{r}
+vcf_out_combined <- read.vcfR("analysis/outlier_detection/outliers_combined.recode.vcf")
+rad_out_combined.filt <- vcfR2genind(vcf_out_combined, strata = strata_ROD, pop = pop)
+```
+
+```{r}
+x_out_combined <- scaleGen(rad_out_combined.filt, NA.method = "mean")
+out_combined_pca <- dudi.pca(x_out_combined, center = FALSE, scale = FALSE, scannf = FALSE, nf = 4)
+pc_scores_combined <- out_combined_pca$li
+```
+
+```{r}
+permanova_result_combined <- adonis2(pc_scores_combined ~ pop, method = "euclidean")
+print(permanova_result_combined)
+```
+
+```{r}
+pca_data_combined <- data.frame(
+  PC1 = pc_scores_combined[,1],
+  PC2 = pc_scores_combined[,2],
+  Treatment = factor(poplist.names, levels = c("CONCON", "STRCON", "CONROD", "STRROD"))
+)
+
+p_value_combined <- permanova_result_combined$`Pr(>F)`[1]
+eigenvalues_combined <- eigen(cov(pca_data_combined[, c("PC1", "PC2")]))$values
+pve_combined <- eigenvalues_combined / sum(eigenvalues_combined) * 100
+
+outlier.pca.combined.plot <- ggplot(pca_data_combined, aes(x = PC1, y = PC2, color = Treatment)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  stat_ellipse() +
+  scale_color_manual(values = col_pal) +
+  labs(
+    title = "PCA of Combined LFMM2 + OutFLANK Outlier SNPs",
+    x = paste0("PC1 (", round(pve_combined[1], 1), "%)"),
+    y = paste0("PC2 (", round(pve_combined[2], 1), "%)")
+  ) +
+  annotate("text", x = -Inf, y = -Inf,
+           label = paste("PERMANOVA p =", format(p_value_combined, digits = 2)),
+           hjust = -0.1, vjust = -1, size = 3.5) +
+  theme_classic(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+outlier.pca.combined.plot
+```
+
+## PCA of overlapping LFMM2 and OutFLANK outlier loci
+
+### Create overlapping outlier BED and VCF
+```{bash eval=FALSE}
+source activate ROD_CADO
+cd ./analysis
+
+# Extract loci shared between LFMM2 and OutFLANK
+bedtools intersect -a ./outlier_detection/results/outliers_lfmm2.bed -b ./FST/Outflank_outliers.bed > ./outlier_detection/results/outliers_overlap_lfmm2_outflank.bed
+
+wc -l ./outlier_detection/results/outliers_overlap_lfmm2_outflank.bed
+
+bcftools view --threads 20 -R ./outlier_detection/results/outliers_overlap_lfmm2_outflank.bed ./raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz -O v -o ./outlier_detection/outliers_overlap.recode.vcf
+```
+
+### Load and analyze overlapping outliers
+```{r}
+vcf_out_overlap <- read.vcfR("analysis/outlier_detection/outliers_overlap.recode.vcf")
+rad_out_overlap.filt <- vcfR2genind(vcf_out_overlap, strata = strata_ROD, pop = pop)
+```
+
+```{r}
+x_out_overlap <- scaleGen(rad_out_overlap.filt, NA.method = "mean")
+out_overlap_pca <- dudi.pca(x_out_overlap, center = FALSE, scale = FALSE, scannf = FALSE, nf = 4)
+pc_scores_overlap <- out_overlap_pca$li
+```
+
+```{r}
+permanova_result_overlap <- adonis2(pc_scores_overlap ~ pop, method = "euclidean")
+print(permanova_result_overlap)
+```
+
+```{r}
+pca_data_overlap <- data.frame(
+  PC1 = pc_scores_overlap[,1],
+  PC2 = pc_scores_overlap[,2],
+  Treatment = factor(poplist.names, levels = c("CONCON", "STRCON", "CONROD", "STRROD"))
+)
+
+p_value_overlap <- permanova_result_overlap$`Pr(>F)`[1]
+eigenvalues_overlap <- eigen(cov(pca_data_overlap[, c("PC1", "PC2")]))$values
+pve_overlap <- eigenvalues_overlap / sum(eigenvalues_overlap) * 100
+
+outlier.pca.overlap.plot <- ggplot(pca_data_overlap, aes(x = PC1, y = PC2, color = Treatment)) +
+  geom_point(size = 2.5, alpha = 0.8) +
+  stat_ellipse() +
+  scale_color_manual(values = col_pal) +
+  labs(
+    title = "PCA of Overlapping LFMM2 & OutFLANK Outlier SNPs",
+    x = paste0("PC1 (", round(pve_overlap[1], 1), "%)"),
+    y = paste0("PC2 (", round(pve_overlap[2], 1), "%)")
+  ) +
+  annotate("text", x = -Inf, y = -Inf,
+           label = paste("PERMANOVA p =", format(p_value_overlap, digits = 2)),
+           hjust = -0.1, vjust = -1, size = 3.5) +
+  theme_classic(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.title = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+outlier.pca.overlap.plot
+```
+
+# Gene Ontology Enrichment Analysis
+Original analysis by Amy Zyck, edits by JBP
+
+## Identifying genes for candidate loci
+
+Using the combined outlier BED file (LFMM2 + OutFLANK) generated above, we intersect with the oyster genome gene annotation to identify candidate genes.
+
+```{bash eval=FALSE}
+source activate ROD_CADO
+mkdir -p ./analysis/GO
+cd ./analysis/GO
+
+# Use the combined outlier BED already generated
+bedtools intersect -wb -a ../outlier_detection/results/outliers_lfmm2_outflank_combined.bed -b ../../other_files/sorted.ref3.0.gene.bed | grep -oh "gene=LOC.*;g" | sed 's/gene=//g' | sed 's/;g//g' | sort | uniq > Sig.gene.ROD.CADO.LOC
+
+cat Sig.gene.ROD.CADO.LOC | wc -l
+```
+
+## Gene Ontology with TopGO
+
+### Download and prepare GO annotation
+
+```{bash eval=FALSE}
+source activate ROD_CADO
+cd ./analysis/GO
+
+wget https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/002/022/765/GCF_002022765.2_C_virginica-3.0/GCF_002022765.2_C_virginica-3.0_gene_ontology.gaf.gz
+
+gunzip GCF_002022765.2_C_virginica-3.0_gene_ontology.gaf.gz
+
+mv GCF_002022765.2_C_virginica-3.0_gene_ontology.gaf gene_ontology.gaf
+```
+
+### Create gene-to-GO mapping file
+
+Making a tab file with gene ID and GO IDs. Each gene has one row with all associated GO terms separated by semicolons.
+
+```{bash eval=FALSE}
+cd ./analysis/GO
+
+awk 'NR>9 {print $3 "\t" $5}' gene_ontology.gaf | 
+sed '1i gene_name\tGeneOntologyIDs' | 
+sort | awk '
+NR==1 {print; next}
+$1!=prev {
+if (NR>2) print prev "\t" goids;
+prev=$1;
+goids=$2;
+next
+}
+{
+goids=goids "; " $2
+}
+END {print prev "\t" goids}
+' > gene2go_full.tab
+```
+
+### Extract GO terms for candidate genes
+
+```{bash eval=FALSE}
+cd ./analysis/GO
+
+grep -F -f Sig.gene.ROD.CADO.LOC gene2go_full.tab > ROD_cand_genes_GO.tab
+
+# Add header
+awk 'BEGIN {print "gene_name\tGeneOntologyIDs"} {print}' ROD_cand_genes_GO.tab > ROD_cand_genes_GO_head.tab
+```
+
+### Load gene-to-GO data
+```{r}
+all_gene2go <- read.delim("analysis/GO/gene2go_full.tab", sep="\t")
+out_gene2go <- read.delim("analysis/GO/ROD_cand_genes_GO_head.tab", sep="\t")
+```
+
+### Prepare gene list for TopGO
+```{r}
+cand_genes <- as.character(unique(out_gene2go$gene_name))
+all_genes <- as.character(unique(all_gene2go$gene_name))
+out_GeneList <- factor(as.integer(all_genes %in% cand_genes))
+names(out_GeneList) <- all_genes
+```
+
+### Read in gene-to-GO mappings
+```{r}
+gene2go_topgo <- readMappings("analysis/GO/gene2go_full.tab", IDsep=";", sep="\t")
+```
+
+### Set gene selection function
+```{r}
+topDiffGenes <- function(allScore) {
+  return(allScore < 0.05)
+}
+```
+
+### Biological Processes
+
+```{r}
+GO_OUT_BP <- new("topGOdata", ontology="BP", gene2GO=gene2go_topgo, allGenes=out_GeneList, annot = annFUN.gene2GO, geneSel=topDiffGenes)
+```
+
+```{r}
+GO_OUT_BP_FE <- runTest(GO_OUT_BP, algorithm="weight01", statistic="fisher")
+```
+
+```{r}
+GO_OUT_BP_En <- GenTable(GO_OUT_BP, Fisher = GO_OUT_BP_FE, orderBy = "Fisher", topNodes = 100, numChar = 100)
+```
+
+```{r}
+GO_OUT_BP_En$Fisher <- as.numeric(GO_OUT_BP_En$Fisher)
+GO_OUT_BP_En_sig <- GO_OUT_BP_En[GO_OUT_BP_En$Fisher < 0.05,]
+```
+
+```{r}
+# Separate GO terms
+out_gene2go_sep <- out_gene2go %>%
+  separate_rows(GeneOntologyIDs, sep = ";")
+
+out_gene2go_sep$GeneOntologyIDs <- trimws(out_gene2go_sep$GeneOntologyIDs)
+GO_OUT_BP_En_sig$GO.ID <- trimws(GO_OUT_BP_En_sig$GO.ID)
+
+GO_OUT_BP_En_sig_gene <- out_gene2go_sep %>%
+  left_join(GO_OUT_BP_En_sig, by = c("GeneOntologyIDs" = "GO.ID")) %>%
+  na.omit()
+
+GO_OUT_BP_En_sig_gene$ontology <- "Biological Processes"
+```
+
+### Cellular Components
+
+```{r}
+GO_OUT_CC <- new("topGOdata", ontology="CC", gene2GO=gene2go_topgo, allGenes=out_GeneList, annot = annFUN.gene2GO, geneSel=topDiffGenes)
+```
+
+```{r}
+GO_OUT_CC_FE <- runTest(GO_OUT_CC, algorithm="weight01", statistic="fisher")
+```
+
+```{r}
+GO_OUT_CC_En <- GenTable(GO_OUT_CC, Fisher = GO_OUT_CC_FE, orderBy = "Fisher", topNodes = 100, numChar = 100)
+```
+
+```{r}
+GO_OUT_CC_En$Fisher <- as.numeric(GO_OUT_CC_En$Fisher)
+GO_OUT_CC_En_sig <- GO_OUT_CC_En[GO_OUT_CC_En$Fisher < 0.05,]
+```
+
+```{r}
+GO_OUT_CC_En_sig$GO.ID <- trimws(GO_OUT_CC_En_sig$GO.ID)
+
+GO_OUT_CC_En_sig_gene <- out_gene2go_sep %>%
+  left_join(GO_OUT_CC_En_sig, by = c("GeneOntologyIDs" = "GO.ID")) %>%
+  na.omit()
+
+GO_OUT_CC_En_sig_gene$ontology <- "Cellular Components"
+```
+
+### Molecular Functions
+
+```{r}
+GO_OUT_MF <- new("topGOdata", ontology="MF", gene2GO=gene2go_topgo, allGenes=out_GeneList, annot = annFUN.gene2GO, geneSel=topDiffGenes)
+```
+
+```{r}
+GO_OUT_MF_FE <- runTest(GO_OUT_MF, algorithm="weight01", statistic="fisher")
+```
+
+```{r}
+GO_OUT_MF_En <- GenTable(GO_OUT_MF, Fisher = GO_OUT_MF_FE, orderBy = "Fisher", topNodes = 100, numChar = 100)
+```
+
+```{r}
+GO_OUT_MF_En$Fisher <- as.numeric(GO_OUT_MF_En$Fisher)
+GO_OUT_MF_En_sig <- GO_OUT_MF_En[GO_OUT_MF_En$Fisher < 0.05,]
+```
+
+```{r}
+GO_OUT_MF_En_sig$GO.ID <- trimws(GO_OUT_MF_En_sig$GO.ID)
+
+GO_OUT_MF_En_sig_gene <- out_gene2go_sep %>%
+  left_join(GO_OUT_MF_En_sig, by = c("GeneOntologyIDs" = "GO.ID")) %>%
+  na.omit()
+
+GO_OUT_MF_En_sig_gene$ontology <- "Molecular Functions"
+```
+
+### Combine all ontologies
+
+```{r}
+GO_OUT_En_sig_gene <- rbind(GO_OUT_BP_En_sig_gene, GO_OUT_CC_En_sig_gene, GO_OUT_MF_En_sig_gene)
+```
+
+```{r}
+merged_out_genes <- GO_OUT_En_sig_gene %>%
+  mutate(prop.sig.genes = Significant/Annotated)
+
+# Save unique instances of gene/GO pairs
+merged_out_genes <- unique(merged_out_genes)
+```
+
+```{r}
+write.csv(merged_out_genes, "analysis/GO/ROD_OUT_GO_en_sig_gene.csv")
+```
+
+### Plot GO enrichment
+
+```{r}
+GO_plot <- ggplot(merged_out_genes, aes(x = Term, y = -log(Fisher), size = prop.sig.genes, fill = -log(Fisher))) +
+  expand_limits(y = 1.5) +
+  ylim(1, 7.25) +
+  geom_hline(yintercept = -log10(0.01), linetype = "longdash", colour = "black", linewidth = .6) +
+  geom_hline(yintercept = -log10(0.001), linetype = "solid", colour = "black", linewidth = .6) +
+  geom_point(shape = 21) + 
+  scale_size(range = c(2, 12)) + 
+  scale_fill_continuous(low = "#1AD3D1FF", high = "#4686FBFF") +
+  xlab('') + 
+  ylab('Enrichment score') +
+  theme_bw() +
+  facet_grid(vars(ontology), scales = "free", space = "free_y") +
+  coord_flip()
+
+GO_plot
+```
+
+```{r}
+png(filename = "figures/GO_enrichment_plot.png",
+    type = "cairo",
+    width = 2000,
+    height = 2000,
+    res = 200,
+    bg = "transparent")
+
+print(GO_plot)
+dev.off()
+```
+
+
+
+
+
