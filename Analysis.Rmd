@@ -5,8 +5,8 @@ output: github_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-knitr::opts_chunk$set(dev = "cairo_png")
-theme_set(theme_classic(base_family = "Liberation Sans"))
+knitr::opts_chunk$set(dev = "png", dev.args = list(type = "cairo"))
+Sys.setenv(DISPLAY = "")
 ```
 
 
@@ -17,7 +17,6 @@ This scripts assumes the directory structure of the github repository and that a
 library(OutFLANK)
 library(bigsnpr)
 library(plyr)
-library(dplyr)
 library(stringr)
 library(reshape2)
 library(tidyr)
@@ -36,11 +35,12 @@ library(ade4)
 library(tibble)
 library(data.table)
 library(topGO)
+library(dplyr)
 ```
 
 ```{r}
 col_pal <- c("#0072B2", "#56B4E9",  "#F0E442", "#E69F00")
-
+theme_set(theme_classic(base_family = "Liberation Sans"))
 ```
 # Mortality Data
 ```{r}
@@ -91,7 +91,6 @@ km.plot <- km_fit %>%
   ) +
   labs(
     title    = "Kaplan-Meier Survival Curves by Treatment",
-    #subtitle = "Oyster survival across four treatment groups",
     x        = "Days",
     y        = "Cumulative Survival Probability",
     color    = "Treatment",
@@ -116,7 +115,7 @@ df.F.mortality <- df.mortality %>%
   summarise(
     Total     = n(),
     Deaths    = sum(Status == 1),
-    Mortality = Deaths / Total * 100,      # as percentage
+    Mortality = Deaths / Total * 100,
     SE        = sqrt((Mortality/100 * (1 - Mortality/100)) / Total) * 100
   ) %>%
   ungroup()
@@ -139,7 +138,6 @@ finalmort.plot <- ggplot(df.F.mortality, aes(x = Treatment, y = Mortality, fill 
   ) +
   labs(
     title    = "Final Mortality by Treatment Group",
-    #subtitle = "Error bars represent ± 1 SE",
     x        = "Treatment",
     y        = "Mortality (%)"
   ) +
@@ -156,10 +154,9 @@ finalmort.plot <- ggplot(df.F.mortality, aes(x = Treatment, y = Mortality, fill 
 finalmort.plot
 ```
 
-
 # Bioinformatics
 ## SNP calling
-```{bash EVAL=FALSE}
+```{bash eval=FALSE}
 mamba env create -f ROD_CADO.yml
 mamba activate ROD_CADO
 
@@ -168,8 +165,8 @@ cd ./analysis
 ../scripts/dDocent_ngs dDocent.config
 ```
 ## SNP filtering
-```{bash EVAL=FALSE}
-mamba activate ROD_CADO
+```{bash eval=FALSE}
+source activate ROD_CADO
 
 cd ./analysis/raw.vcf
 ../../scripts/PVCF_filter.sh TRS 36
@@ -185,7 +182,7 @@ plink2 --allow-extra-chr --make-bed --out TRSdp10g1.FIL --vcf SNP.TRSdp10g1max2a
 Original analysis by Jacob Green, edits by JBP
 
 ### Calculate from vcf files
-```{bash, EVAL =FALSE}
+```{bash, eval=FALSE}
 source activate ROD_CADO
 mkdir -p ./analysis/diversity_statistics/nd
 cd ./analysis/diversity_statistics/nd
@@ -234,15 +231,11 @@ pi.df$Treatment <- factor(pi.df$Treatment, levels=c("CONCON", "STRCON", "CONROD"
 ```{r}
 pi.plot <- ggplot(pi.df, aes(x=PI,y = Treatment))+
   geom_violin(aes(color=Treatment,fill= Treatment), alpha=0.9) +
-  #stat_summary(fun=mean, geom="point", shape=23, size=4)+
-  #geom_dotplot(binaxis='y', stackdir='center', dotsize=0.005)+
-  #geom_boxplot(width=0.25,outlier.shape = 23, outlier.color = "black", fill = NA)+
   geom_boxplot(width=0.25,outlier.shape = NA, outlier.color = NA, fill = NA)+
   stat_summary(fun=mean, geom="point", shape=23, size=2)+
   scale_fill_manual(values=col_pal)+
   scale_color_manual(values=col_pal)+
   scale_y_discrete(limits = rev(levels(pi.df$Treatment)))+
-  #ylab("Population/Line")+
   labs(x=expression(pi)) +
   ggtitle("Nucleotide Diversity by Treatment")+
   theme_classic(base_size = 13) +
@@ -289,7 +282,7 @@ popStats -y GT --file <(bcftools view --threads 40 ../../raw.vcf/filtered/SNP.TR
 
 ```
 
-```{bash eval=FALSE}
+```{bash}
 source activate ROD_CADO
 cd ./analysis/diversity_statistics/het
 
@@ -312,10 +305,12 @@ source activate ROD_CADO
 cd ./analysis/diversity_statistics/het
 bedtools makewindows -g ../../../other_files/genome.file -w 10000 | mawk '!/NC_007175.2/' > 10kb.bed
 
-bedtools intersect -b CONCON-treat.het -a 10kb.bed -wa -wb | bedtools merge -d -1 -c 7,8 -o mean > CONCON.het.10kb.bed
-bedtools intersect -b CONROD-treat.het -a 10kb.bed -wa -wb | bedtools merge -d -1 -c 7,8 -o mean > CONROD.het.10kb.bed
-bedtools intersect -b STRCON-treat.het -a 10kb.bed -wa -wb | bedtools merge -d -1 -c 7,8 -o mean > STRCON.het.10kb.bed
+bedtools intersect -b CONCON-treat.het -a 10kb.bed -wa -wb | bedtools merge -d -1 -c 7,8 -o mean > CONCON.het.10kb.bed &
+bedtools intersect -b CONROD-treat.het -a 10kb.bed -wa -wb | bedtools merge -d -1 -c 7,8 -o mean > CONROD.het.10kb.bed &
+bedtools intersect -b STRCON-treat.het -a 10kb.bed -wa -wb | bedtools merge -d -1 -c 7,8 -o mean > STRCON.het.10kb.bed &
 bedtools intersect -b STRROD-treat.het -a 10kb.bed -wa -wb | bedtools merge -d -1 -c 7,8 -o mean > STRROD.het.10kb.bed
+
+wait
 
 cat <(echo -e "CHROM\tBIN_START\tBIN_END\tEXP_HET\tOBS_HET\tTREATMENT") <(mawk '{if (NR>1)print $0 "\tCONCON"}' CONCON.het.10kb.bed) <(mawk '{if (NR>1)print $0 "\tCONROD"}' CONROD.het.10kb.bed) <(mawk '{if (NR>1)print $0 "\tSTRCON"}' STRCON.het.10kb.bed) <(mawk '{if (NR>1)print $0 "\tSTRROD"}' STRROD.het.10kb.bed)  > treat.10kb.txt
 
@@ -330,7 +325,6 @@ het.df$Treatment <- factor(het.df$TREATMENT, levels=c("CONCON", "STRCON", "CONRO
 ```{r}
 het.plot <- ggplot(het.df, aes(x=OBS_HET,y = Treatment))+
   geom_violin(aes(color=Treatment,fill= Treatment), alpha =0.9) +
-  #geom_boxplot(width=0.25,outlier.shape = 23, outlier.color = "black", fill = NA)+
   geom_boxplot(width=0.25,outlier.shape = NA, outlier.color = NA, fill = NA)+
   stat_summary(fun=mean, geom="point", shape=23, size=2)+
   scale_fill_manual(values=col_pal)+
@@ -365,7 +359,7 @@ posthoc.het
 
 ## Tajima's D
 Code by Megan Guidry with edits by Jon Puritz
-```{bash, eval = FALSE}
+```{bash, eval= FALSE}
 mamba create -n vkrc python=3.8 numpy scipy
 source activate vkrc
 pip install VCF-kit
@@ -403,15 +397,11 @@ tajd.df$Treatment <- factor(tajd.df$TREATMENT, levels=c("CONCON", "STRCON", "CON
 ```{r}
 tajd.plot <- ggplot(tajd.df, aes(x=TAJD,y = Treatment))+
   geom_violin(aes(color=Treatment,fill= Treatment)) +
-  #stat_summary(fun=mean, geom="point", shape=23, size=4)+
-  #geom_dotplot(binaxis='y', stackdir='center', dotsize=0.005)+
-  #geom_boxplot(width=0.25,outlier.shape = 23, outlier.color = "black", fill = NA)+
   geom_boxplot(width=0.25,outlier.shape = NA, outlier.color = NA, fill = NA)+
   stat_summary(fun=mean, geom="point", shape=23, size=2)+
   scale_fill_manual(values=col_pal)+
   scale_color_manual(values=col_pal)+
   scale_y_discrete(limits = rev(levels(tajd.df$Treatment)))+
-  #ylab("Population/Line")+
   labs(x = expression("Tajima's "*italic(D))) +
   ggtitle(expression("Tajima's "*italic(D)*" by Treatment")) +
   theme_classic(base_size = 13) +
@@ -443,15 +433,11 @@ posthoc.tajd
 
 # PCA
 Original Code by Jacob Green, edits by Jon Puritz
-```{bash, eval = FALSE}
+```{bash, eval= FALSE}
 cd analysis/raw.vcf/filtered/
 plink2 --bfile TRSdp10g1.FIL --make-bed --allow-extra-chr --out TRSdp10g1.FIL.ALL --maf 0.05
 
-plink2 --bfile TRSdp10g1.FIL --make-bed --allow-extra-chr --keep <(cut -f1 ../../popmap | grep -v CH | grep -v R[1,2,3] ) --out TRSdp10g1.FIL.CMB --maf 0.05
 
-plink2 --bfile TRSdp10g1.FIL --make-bed --allow-extra-chr --keep <(cut -f1 ../../popmap | grep -v CH | grep -v RH ) --out TRSdp10g1.FIL.ROD --maf 0.05
-
-plink2 --bfile TRSdp10g1.FIL --make-bed --allow-extra-chr --keep <(cut -f1 ../../popmap | grep -v R ) --out TRSdp10g1.FIL.STR --maf 0.05
 ```
 
 ```{r}
@@ -476,7 +462,7 @@ colnames(df.pca) <- paste0("PC", 1:ncol(df.pca))
 df.pca$Treatment <- poplist.names
 df.pca$Treatment <- factor(df.pca$Treatment, levels=c("CONCON", "STRCON", "CONROD", "STRROD"))
 
-variance_explained <- res$singular.values^2 / sum(res$singular.values^2) * 100
+variance_explained <- resld$singular.values^2 / sum(resld$singular.values^2) * 100
 cat("Variance explained by each PC:\n")
 print(round(variance_explained, 2))
 
@@ -552,6 +538,7 @@ paste <(seq 1 $NUM) totalloci > loci.plus.index
 ### Load genotype and environmental data
 ```{r}
 clim.env_rod <- read.table("analysis/outlier_detection/strata_ROD_tab", header=TRUE)
+strata_ROD <- clim.env_rod
 gen_rod <- fread("analysis/outlier_detection/snp_rod.lfmm", header = FALSE)
 row.names(gen_rod) <- clim.env_rod$Individual
 
@@ -561,11 +548,21 @@ COMB_BIN <- clim.env_rod$Combined_Bin
 ```
 
 ### LFMM ridge - Stress (CADO)
-```{r}
+```{r eval=FALSE}
 oys_rod_CADO.lfmm <- lfmm_ridge(Y=gen_rod, X=CADO, K=4)
 oys_rod_CADO.pv <- lfmm_test(Y=gen_rod, X=CADO, lfmm=oys_rod_CADO.lfmm, calibrate="gif")
 oys_rod_CADO.pv$gif
 ```
+
+```{r eval= FALSE}
+save(oys_rod_CADO.lfmm, oys_rod_CADO.pv, file = "./analysis/outlier_detection/lfmm1_data.RData")
+```
+
+```{r}
+load("./analysis/outlier_detection/lfmm1_data.RData")
+
+```
+
 
 ```{r}
 zscore_rod_CADO <- oys_rod_CADO.pv$score[,1]
@@ -581,11 +578,21 @@ invisible(lapply(oys_rod_CADO.FDR.1, write, "analysis/outlier_detection/outliers
 ```
 
 ### LFMM ridge - Disease
-```{r}
+```{r eval=FALSE}
 oys_rod_DIS.lfmm <- lfmm_ridge(Y=gen_rod, X=DIS, K=4)
 oys_rod_DIS.pv <- lfmm_test(Y=gen_rod, X=DIS, lfmm=oys_rod_DIS.lfmm, calibrate="gif")
 oys_rod_DIS.pv$gif
 ```
+
+```{r eval= FALSE}
+save(oys_rod_DIS.lfmm, oys_rod_DIS.pv, file = "./analysis/outlier_detection/lfmm2_data.RData")
+```
+
+```{r}
+load("./analysis/outlier_detection/lfmm2_data.RData")
+
+```
+
 
 ```{r}
 zscore_rod_DIS <- oys_rod_DIS.pv$score[,1]
@@ -601,11 +608,21 @@ invisible(lapply(oys_rod_DIS.FDR.1, write, "analysis/outlier_detection/outliers_
 ```
 
 ### LFMM ridge - Combined treatment (binary)
-```{r}
+```{r eval=FALSE}
 oys_rod_CB.lfmm <- lfmm_ridge(Y=gen_rod, X=COMB_BIN, K=4)
 oys_rod_CB.pv <- lfmm_test(Y=gen_rod, X=COMB_BIN, lfmm=oys_rod_CB.lfmm, calibrate="gif")
 oys_rod_CB.pv$gif
 ```
+
+```{r eval= FALSE}
+save(oys_rod_CB.lfmm, oys_rod_CB.pv, file = "./analysis/outlier_detection/lfmm3_data.RData")
+```
+
+```{r}
+load("./analysis/outlier_detection/lfmm3_data.RData")
+
+```
+
 
 ```{r}
 oys_rod_CB.qv <- qvalue(oys_rod_CB.pv$calibrated.pvalue)$qvalues
@@ -621,7 +638,7 @@ invisible(lapply(oys_rod_CB.FDR.1, write, "analysis/outlier_detection/outliers_l
 ## Combine outliers and create BED file
 
 ### Map SNP indices to genomic positions
-```{bash eval=FALSE}
+```{bash eval=TRUE}
 source activate ROD_CADO
 mkdir -p analysis/outlier_detection/results
 cd ./analysis/outlier_detection
@@ -644,71 +661,8 @@ bcftools index --threads 20 ../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz
 bcftools view --threads 20 -R ./results/outliers_lfmm2_CB.loci.txt ../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz -O b -o outliers_lfmm2_CB.recode.vcf
 ```
 
-## Validate outliers with PCA and PERMANOVA
-
-```{r}
-strata_ROD <- read.table("analysis/outlier_detection/strata_ROD_tab", header=TRUE)
-pop <- poplist.names
-Combined <- c(rep("No", 20),rep("No", 20),rep("No", 20),rep("Yes", 20))
-```
-
-```{r}
-vcf_out_lfmm_CB <- read.vcfR("analysis/outlier_detection/outliers_lfmm2_CB.recode.vcf")
-rad_out_lfmm_CB.filt <- vcfR2genind(vcf_out_lfmm_CB, strata = strata_ROD, pop = pop)
-```
-
-```{r}
-x_out_lfmm_CB <- scaleGen(rad_out_lfmm_CB.filt, NA.method = "mean")
-out_lfmm_CB_pca <- dudi.pca(x_out_lfmm_CB, center = FALSE, scale = FALSE, scannf = FALSE, nf = 4)
-pc_scores_CB <- out_lfmm_CB_pca$li
-```
-
-```{r}
-permanova_result_CB <- adonis2(pc_scores_CB ~ pop, method = "euclidean")
-print(permanova_result_CB)
-```
-
-```{r}
-permanova_result_CB_combined <- adonis2(pc_scores_CB ~ Combined, method = "euclidean")
-print(permanova_result_CB_combined)
-```
-
-```{r}
-
-pca_data_CB <- data.frame(
-  PC1 = pc_scores_CB[,1],
-  PC2 = pc_scores_CB[,2],
-  Treatment = factor(poplist.names, levels = c("CONCON", "STRCON", "CONROD", "STRROD"))
-)
-
-p_value_CB <- permanova_result_CB$`Pr(>F)`[1]
-eigenvalues_CB <- eigen(cov(pca_data_CB[, c("PC1", "PC2")]))$values
-pve_CB <- eigenvalues_CB / sum(eigenvalues_CB) * 100
-
-outlier.pca.plot <- ggplot(pca_data_CB, aes(x = PC1, y = PC2, color = Treatment)) +
-  geom_point(size = 2.5, alpha = 0.8) +
-  stat_ellipse() +
-  scale_color_manual(values = col_pal) +
-  labs(
-    title = "PCA of Combined Treatment Outlier SNPs from LFMM",
-    x = paste0("PC1 (", round(pve_CB[1], 1), "%)"),
-    y = paste0("PC2 (", round(pve_CB[2], 1), "%)")
-  ) +
-  annotate("text", x = -Inf, y = -Inf,
-           label = paste("PERMANOVA p =", format(p_value_CB, digits = 2)),
-           hjust = -0.1, vjust = -1, size = 3.5) +
-  theme_classic(base_size = 13) +
-  theme(
-    plot.title = element_text(face = "bold"),
-    legend.title = element_text(face = "bold"),
-    legend.position = "right"
-  )
-
-outlier.pca.plot
-```
-
 # FST and OutFLANK
-```{bash, eval = FALSE}
+```{bash, eval= FALSE}
 source activate ROD_CADO
 mkdir -p ./analysis/FST
 cd ./analysis/FST
@@ -718,18 +672,12 @@ plink2 --bfile ../raw.vcf/filtered/TRSdp10g1.FIL --make-bed --allow-extra-chr --
 ```
 
 
-
-
-
-
-
-
 ```{r}
 # Read in bedfile
 rds <- snp_readBed("./analysis/raw.vcf/filtered/TRSdp10g1.FIL.ALL.bed", backingfile = tempfile())
 ```
 
-```{r}
+```{r, eval = FALSE}
 full_bed <- snp_attach(rds)
 G <- full_bed$genotypes
 CHR <- full_bed$map$chromosome
@@ -737,17 +685,17 @@ POS <- full_bed$map$physical.pos
 NCORES <- nb_cores()
 ```
 
-```{r}
+```{r, eval=FALSE}
 svd <- snp_autoSVD(G, as.integer(factor(CHR)), POS, ncores = NCORES,min.mac =8,size=10)
 ```
 
-```{r}
+```{r, eval=FALSE}
 write(paste(CHR[attr(svd, "subset")],
             POS[attr(svd, "subset")], sep='\t'),
       "./analysis/FST/ThinnedSNPs.maskedPCs.txt")
 ```
 
-```{bash, eval = FALSE}
+```{bash, eval= FALSE}
 source activate ROD_CADO
 cd ./analysis/FST
 rm -f random.50k.snps
@@ -756,7 +704,7 @@ cut -f1 ThinnedSNPs.maskedPCs.txt| uniq | parallel "grep {} ThinnedSNPs.maskedPC
 
 ```
 
-```{bash, eval = FALSE}
+```{bash, eval=FALSE}
 source activate ROD_CADO
 cd ./analysis/FST
 
@@ -766,7 +714,9 @@ mawk 'NR==1{print "IND\tPOP"};NR >0 {print $0}' ../popmap > popmap.txt
 ```
 
 ```{r}
-rds.random <- snp_readBed("random.50k.snps", backingfile = tempfile())
+rds.random <- snp_readBed("./analysis/FST/random50k.bed", backingfile = tempfile())
+popmap <- read.table("./analysis/FST/popmap.txt", header=TRUE)
+popmap$TREAT <- c(rep("CONCON",20),rep("STRCON",20),rep("CONROD",20),rep("STRROD",20))
 
 random <- snp_attach(rds.random)
 G.r <- random$genotypes
@@ -775,25 +725,16 @@ POS.r <- random$map$physical.pos
 
 ```
 
-```{r}
-
-popmap <- read.table("./analysis/FST/popmap.txt", header=TRUE)
-popmap$TREAT <- c(rep("CON",20),rep("STR",20),rep("ROD",20),rep("STRROD",20))
-
-
+```{r eval=FALSE}
 my_fst <- MakeDiploidFSTMat(G[], locusNames = paste0(CHR,"_", POS), popNames = popmap$TREAT)
 
 my_fst.r <- MakeDiploidFSTMat(G.r[], locusNames = paste0(CHR.r,"_", POS.r), popNames = popmap$TREAT)
-
-
-
-
 ```
 
 
 
 
-```{r}
+```{r eval=FALSE}
 save(my_fst, file = "./analysis/FST/FST_data.RData")
 ```
 
@@ -804,6 +745,7 @@ load("./analysis/FST/FST_data.RData")
 
 
 ```{r}
+
 out_trim <- OutFLANK(my_fst[attr(svd, which="subset"),], NumberOfSamples=4, qthreshold = 0.1, Hmin = 0.1)
 
 OutFLANKResultsPlotter(out_trim, withOutliers = TRUE,
@@ -964,7 +906,7 @@ bcftools view --threads 20 -R ./results/outliers_lfmm2.bed ../raw.vcf/filtered/S
 ### Load and analyze all LFMM2 outliers
 ```{r}
 vcf_out_lfmm_all <- read.vcfR("analysis/outlier_detection/outliers_lfmm2_all.recode.vcf")
-rad_out_lfmm_all.filt <- vcfR2genind(vcf_out_lfmm_all, strata = strata_ROD, pop = pop)
+rad_out_lfmm_all.filt <- vcfR2genind(vcf_out_lfmm_all, strata = strata_ROD, pop = popmap$TREAT)
 ```
 
 ```{r}
@@ -974,13 +916,8 @@ pc_scores_lfmm_all <- out_lfmm_all_pca$li
 ```
 
 ```{r}
-permanova_result_lfmm_all <- adonis2(pc_scores_lfmm_all ~ pop, method = "euclidean")
+permanova_result_lfmm_all <- adonis2(pc_scores_lfmm_all ~ poplist.names, method = "euclidean")
 print(permanova_result_lfmm_all)
-```
-
-```{r}
-permanova_result_lfmm_all_combined <- adonis2(pc_scores_lfmm_all ~ Combined, method = "euclidean")
-print(permanova_result_lfmm_all_combined)
 ```
 
 ```{r}
@@ -1029,7 +966,7 @@ bcftools view --threads 20 -R Outflank_outliers.bed ../raw.vcf/filtered/SNP.TRSd
 ### Load and analyze OutFLANK outliers
 ```{r}
 vcf_out_outflank <- read.vcfR("analysis/FST/outliers_Outflank.recode.vcf")
-rad_out_outflank.filt <- vcfR2genind(vcf_out_outflank, strata = strata_ROD, pop = pop)
+rad_out_outflank.filt <- vcfR2genind(vcf_out_outflank, strata = strata_ROD, pop = popmap$TREAT)
 ```
 
 ```{r}
@@ -1039,7 +976,7 @@ pc_scores_outflank <- out_outflank_pca$li
 ```
 
 ```{r}
-permanova_result_outflank <- adonis2(pc_scores_outflank ~ pop, method = "euclidean")
+permanova_result_outflank <- adonis2(pc_scores_outflank ~ popmap$TREAT, method = "euclidean")
 print(permanova_result_outflank)
 ```
 
@@ -1092,7 +1029,7 @@ bcftools view --threads 20 -R ./outlier_detection/results/outliers_lfmm2_outflan
 ### Load and analyze combined outliers
 ```{r}
 vcf_out_combined <- read.vcfR("analysis/outlier_detection/outliers_combined.recode.vcf")
-rad_out_combined.filt <- vcfR2genind(vcf_out_combined, strata = strata_ROD, pop = pop)
+rad_out_combined.filt <- vcfR2genind(vcf_out_combined, strata = strata_ROD, pop = popmap$TREAT)
 ```
 
 ```{r}
@@ -1102,7 +1039,7 @@ pc_scores_combined <- out_combined_pca$li
 ```
 
 ```{r}
-permanova_result_combined <- adonis2(pc_scores_combined ~ pop, method = "euclidean")
+permanova_result_combined <- adonis2(pc_scores_combined ~ popmap$TREAT, method = "euclidean")
 print(permanova_result_combined)
 ```
 
@@ -1157,7 +1094,7 @@ bcftools view --threads 20 -R ./outlier_detection/results/outliers_overlap_lfmm2
 ### Load and analyze overlapping outliers
 ```{r}
 vcf_out_overlap <- read.vcfR("analysis/outlier_detection/outliers_overlap.recode.vcf")
-rad_out_overlap.filt <- vcfR2genind(vcf_out_overlap, strata = strata_ROD, pop = pop)
+rad_out_overlap.filt <- vcfR2genind(vcf_out_overlap, strata = strata_ROD, pop = popmap$TREAT)
 ```
 
 ```{r}
@@ -1167,7 +1104,7 @@ pc_scores_overlap <- out_overlap_pca$li
 ```
 
 ```{r}
-permanova_result_overlap <- adonis2(pc_scores_overlap ~ pop, method = "euclidean")
+permanova_result_overlap <- adonis2(pc_scores_overlap ~ popmap$TREAT, method = "euclidean")
 print(permanova_result_overlap)
 ```
 
@@ -1204,7 +1141,7 @@ outlier.pca.overlap.plot <- ggplot(pca_data_overlap, aes(x = PC1, y = PC2, color
 outlier.pca.overlap.plot
 ```
 
-# Gene Ontology Enrichment Analysis
+# Gene Ontology Enrichment Analysis — Combined Outliers (LFMM2 ∪ OutFLANK)
 Original analysis by Amy Zyck, edits by JBP
 
 ## Identifying genes for candidate loci
@@ -1440,7 +1377,186 @@ print(GO_plot)
 dev.off()
 ```
 
+# Gene Ontology Enrichment Analysis — Overlapping Outliers Only (LFMM2 ∩ OutFLANK)
+Original analysis by Amy Zyck, edits by JBP
 
+This section mirrors the GO enrichment analysis above but restricts candidate loci to SNPs identified as outliers by **both** LFMM2 and OutFLANK (i.e., the intersection). This allows a direct comparison of enriched terms between the union set and the high-confidence overlap set.
 
+## Identifying genes for overlapping candidate loci
 
+```{bash eval=FALSE}
+source activate ROD_CADO
+cd ./analysis/GO
 
+# Use the overlapping outlier BED already generated above
+bedtools intersect -wb -a ../outlier_detection/results/outliers_overlap_lfmm2_outflank.bed -b ../../other_files/sorted.ref3.0.gene.bed | grep -oh "gene=LOC.*;g" | sed 's/gene=//g' | sed 's/;g//g' | sort | uniq > Sig.gene.ROD.CADO.overlap.LOC
+
+cat Sig.gene.ROD.CADO.overlap.LOC | wc -l
+```
+
+### Extract GO terms for overlapping candidate genes
+
+```{bash eval=FALSE}
+cd ./analysis/GO
+
+grep -F -f Sig.gene.ROD.CADO.overlap.LOC gene2go_full.tab > ROD_overlap_genes_GO.tab
+
+# Add header
+awk 'BEGIN {print "gene_name\tGeneOntologyIDs"} {print}' ROD_overlap_genes_GO.tab > ROD_overlap_genes_GO_head.tab
+```
+
+### Load gene-to-GO data for overlapping outliers
+```{r}
+overlap_gene2go <- read.delim("analysis/GO/ROD_overlap_genes_GO_head.tab", sep="\t")
+```
+
+### Prepare gene list for TopGO
+```{r}
+overlap_cand_genes <- as.character(unique(overlap_gene2go$gene_name))
+overlap_GeneList <- factor(as.integer(all_genes %in% overlap_cand_genes))
+names(overlap_GeneList) <- all_genes
+```
+
+### Biological Processes
+
+```{r}
+GO_OV_BP <- new("topGOdata", ontology="BP", gene2GO=gene2go_topgo, allGenes=overlap_GeneList, annot = annFUN.gene2GO, geneSel=topDiffGenes)
+GO_OV_BP_FE <- runTest(GO_OV_BP, algorithm="weight01", statistic="fisher")
+GO_OV_BP_En <- GenTable(GO_OV_BP, Fisher = GO_OV_BP_FE, orderBy = "Fisher", topNodes = 100, numChar = 100)
+GO_OV_BP_En$Fisher <- as.numeric(GO_OV_BP_En$Fisher)
+GO_OV_BP_En_sig <- GO_OV_BP_En[GO_OV_BP_En$Fisher < 0.05,]
+```
+
+```{r}
+overlap_gene2go_sep <- overlap_gene2go %>%
+  separate_rows(GeneOntologyIDs, sep = ";")
+overlap_gene2go_sep$GeneOntologyIDs <- trimws(overlap_gene2go_sep$GeneOntologyIDs)
+GO_OV_BP_En_sig$GO.ID <- trimws(GO_OV_BP_En_sig$GO.ID)
+
+GO_OV_BP_En_sig_gene <- overlap_gene2go_sep %>%
+  left_join(GO_OV_BP_En_sig, by = c("GeneOntologyIDs" = "GO.ID")) %>%
+  na.omit()
+GO_OV_BP_En_sig_gene$ontology <- "Biological Processes"
+```
+
+### Cellular Components
+
+```{r}
+GO_OV_CC <- new("topGOdata", ontology="CC", gene2GO=gene2go_topgo, allGenes=overlap_GeneList, annot = annFUN.gene2GO, geneSel=topDiffGenes)
+GO_OV_CC_FE <- runTest(GO_OV_CC, algorithm="weight01", statistic="fisher")
+GO_OV_CC_En <- GenTable(GO_OV_CC, Fisher = GO_OV_CC_FE, orderBy = "Fisher", topNodes = 100, numChar = 100)
+GO_OV_CC_En$Fisher <- as.numeric(GO_OV_CC_En$Fisher)
+GO_OV_CC_En_sig <- GO_OV_CC_En[GO_OV_CC_En$Fisher < 0.05,]
+```
+
+```{r}
+GO_OV_CC_En_sig$GO.ID <- trimws(GO_OV_CC_En_sig$GO.ID)
+
+GO_OV_CC_En_sig_gene <- overlap_gene2go_sep %>%
+  left_join(GO_OV_CC_En_sig, by = c("GeneOntologyIDs" = "GO.ID")) %>%
+  na.omit()
+GO_OV_CC_En_sig_gene$ontology <- "Cellular Components"
+```
+
+### Molecular Functions
+
+```{r}
+GO_OV_MF <- new("topGOdata", ontology="MF", gene2GO=gene2go_topgo, allGenes=overlap_GeneList, annot = annFUN.gene2GO, geneSel=topDiffGenes)
+GO_OV_MF_FE <- runTest(GO_OV_MF, algorithm="weight01", statistic="fisher")
+GO_OV_MF_En <- GenTable(GO_OV_MF, Fisher = GO_OV_MF_FE, orderBy = "Fisher", topNodes = 100, numChar = 100)
+GO_OV_MF_En$Fisher <- as.numeric(GO_OV_MF_En$Fisher)
+GO_OV_MF_En_sig <- GO_OV_MF_En[GO_OV_MF_En$Fisher < 0.05,]
+```
+
+```{r}
+GO_OV_MF_En_sig$GO.ID <- trimws(GO_OV_MF_En_sig$GO.ID)
+
+GO_OV_MF_En_sig_gene <- overlap_gene2go_sep %>%
+  left_join(GO_OV_MF_En_sig, by = c("GeneOntologyIDs" = "GO.ID")) %>%
+  na.omit()
+GO_OV_MF_En_sig_gene$ontology <- "Molecular Functions"
+```
+
+### Combine all ontologies
+
+```{r}
+GO_OV_En_sig_gene <- rbind(GO_OV_BP_En_sig_gene, GO_OV_CC_En_sig_gene, GO_OV_MF_En_sig_gene)
+
+merged_overlap_genes <- GO_OV_En_sig_gene %>%
+  mutate(prop.sig.genes = Significant / Annotated)
+merged_overlap_genes <- unique(merged_overlap_genes)
+
+write.csv(merged_overlap_genes, "analysis/GO/ROD_OVERLAP_GO_en_sig_gene.csv")
+```
+
+### Plot GO enrichment — overlapping outliers only
+
+```{r}
+GO_plot_overlap <- ggplot(merged_overlap_genes, aes(x = Term, y = -log(Fisher), size = prop.sig.genes, fill = -log(Fisher))) +
+  expand_limits(y = 1.5) +
+  ylim(1, 7.25) +
+  geom_hline(yintercept = -log10(0.01), linetype = "longdash", colour = "black", linewidth = .6) +
+  geom_hline(yintercept = -log10(0.001), linetype = "solid", colour = "black", linewidth = .6) +
+  geom_point(shape = 21) +
+  scale_size(range = c(2, 12)) +
+  scale_fill_continuous(low = "#1AD3D1FF", high = "#4686FBFF") +
+  xlab('') +
+  ylab('Enrichment score') +
+  theme_bw() +
+  facet_grid(vars(ontology), scales = "free", space = "free_y") +
+  coord_flip()
+
+GO_plot_overlap
+```
+
+```{r}
+png(filename = "figures/GO_enrichment_overlap_plot.png",
+    type = "cairo",
+    width = 2000,
+    height = 2000,
+    res = 200,
+    bg = "transparent")
+print(GO_plot_overlap)
+dev.off()
+```
+
+## Side-by-side comparison: Combined vs. Overlapping outliers
+
+To directly compare enriched GO terms between the two outlier sets, we add a grouping label to each dataset and bind them together.
+
+```{r}
+merged_out_genes$outlier_set    <- "Combined (LFMM2 \u222a OutFLANK)"
+merged_overlap_genes$outlier_set <- "Overlap (LFMM2 \u2229 OutFLANK)"
+
+GO_comparison <- bind_rows(merged_out_genes, merged_overlap_genes)
+```
+
+```{r}
+GO_comparison_plot <- ggplot(GO_comparison, aes(x = Term, y = -log(Fisher), size = prop.sig.genes, fill = -log(Fisher))) +
+  expand_limits(y = 1.5) +
+  ylim(1, 7.25) +
+  geom_hline(yintercept = -log10(0.01), linetype = "longdash", colour = "black", linewidth = .6) +
+  geom_hline(yintercept = -log10(0.001), linetype = "solid", colour = "black", linewidth = .6) +
+  geom_point(shape = 21) +
+  scale_size(range = c(2, 12)) +
+  scale_fill_continuous(low = "#1AD3D1FF", high = "#4686FBFF") +
+  xlab('') +
+  ylab('Enrichment score') +
+  theme_bw() +
+  facet_grid(vars(ontology, outlier_set), scales = "free", space = "free_y") +
+  coord_flip() +
+  theme(strip.text.y = element_text(angle = 0, size = 8))
+
+GO_comparison_plot
+```
+
+```{r}
+png(filename = "figures/GO_enrichment_comparison_plot.png",
+    type = "cairo",
+    width = 3000,
+    height = 2500,
+    res = 200,
+    bg = "transparent")
+print(GO_comparison_plot)
+dev.off()
+```
