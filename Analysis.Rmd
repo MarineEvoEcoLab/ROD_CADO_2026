@@ -1206,7 +1206,7 @@ chunk from here down after editing — the 500 bp re-binning is derived from thi
 
 ```{r}
 flank   <- 20000  # bp either side of the focal SNP; oyster LD decays well within this
-binsize <- 500    # bp, for the focal-region diversity tracks (used by the bash chunk below)
+binsize <- 2500    # bp, for the focal-region diversity tracks (used by the bash chunk below)
 
 # Display smoothing for the panel C diversity tracks: centred rolling mean over this many
 # bins. 1 = raw. At binsize 500 this makes 3 = 1.5 kb, 5 = 2.5 kb, 9 = 4.5 kb.
