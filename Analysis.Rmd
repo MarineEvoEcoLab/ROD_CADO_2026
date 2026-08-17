@@ -1290,8 +1290,13 @@ pi.focal <- rbindlist(lapply(names(treat.files), function(t) {
   d <- fread(paste0("./analysis/figure2/", treat.files[t], ".focal.windowed.pi"))
   d$Treatment <- t; d }))
 
+# VCF-kit writes its own header (CHROM / BIN_START / BIN_END / N_Sites / N_SNPs / TajimaD),
+# so normalise the column names the way the genome-wide chunk does with its echo -e header.
 tajd.focal <- rbindlist(lapply(names(treat.files), function(t) {
-  d <- fread(paste0("./analysis/figure2/", treat.files[t], ".focal.tajima"))
+  d  <- fread(paste0("./analysis/figure2/", treat.files[t], ".focal.tajima"))
+  tj <- grep("taj", names(d), ignore.case = TRUE, value = TRUE)
+  setnames(d, if (length(tj)) tj[1] else names(d)[6], "TAJD")
+  setnames(d, 1:3, c("CHROM", "BIN_START", "BIN_END"))
   d$Treatment <- t; d }))
 
 het.focal <- fread("./analysis/figure2/focal.het.txt", header = TRUE)
@@ -1299,6 +1304,11 @@ setnames(het.focal, "TREATMENT", "Treatment")
 
 for (d in list(pi.focal, tajd.focal, het.focal))
   d[, Treatment := factor(Treatment, levels = treat.lv)]
+
+# fail loudly rather than silently dropping a column downstream
+stopifnot(all(c("CHROM","BIN_START","BIN_END","PI","Treatment")      %in% names(pi.focal)),
+          all(c("CHROM","BIN_START","BIN_END","TAJD","Treatment")    %in% names(tajd.focal)),
+          all(c("CHROM","BIN_START","BIN_END","OBS_HET","Treatment") %in% names(het.focal)))
 ```
 
 ## Panel A — genome-wide FST
@@ -1370,6 +1380,8 @@ fst.rows <- rbindlist(lapply(seq_len(nrow(focal)), function(i) {
 # --- 500 bp windowed metrics -------------------------------------------------
 grab.focal <- function(d, valcol, metric) {
   d <- as.data.frame(d)
+  if (!valcol %in% names(d))
+    stop("column '", valcol, "' not found; have: ", paste(names(d), collapse = ", "))
   rbindlist(lapply(seq_len(nrow(focal)), function(i) {
     f <- focal[i, ]
     s <- d[d$CHROM == f$CHROM &
