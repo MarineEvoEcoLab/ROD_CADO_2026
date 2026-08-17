@@ -1309,17 +1309,6 @@ stopifnot(all(c("CHROM","BIN_START","BIN_END","Treatment") %in% names(pi.focal))
           all(c("CHROM","BIN_START","BIN_END","Treatment") %in% names(tajd.focal)),
           all(c("CHROM","BIN_START","BIN_END","Treatment") %in% names(het.focal)))
 
-# Upstream tools spell these differently (VCF-kit writes TajimaD, not TAJD). Resolve the
-# wanted column by name first, then by pattern, so the plotting code does not care.
-resolve.col <- function(d, valcol) {
-  if (valcol %in% names(d)) return(valcol)
-  pat <- c(TAJD = "taj", PI = "^pi$", OBS_HET = "obs.?het", EXP_HET = "exp.?het")[[valcol]]
-  hit <- if (length(pat)) grep(pat, names(d), ignore.case = TRUE, value = TRUE) else character(0)
-  if (!length(hit))
-    stop("column '", valcol, "' not found; have: ", paste(names(d), collapse = ", "))
-  message("resolve.col: using '", hit[1], "' for '", valcol, "'")
-  hit[1]
-}
 ```
 
 ## Panel A — genome-wide FST
@@ -1389,6 +1378,19 @@ fst.rows <- rbindlist(lapply(seq_len(nrow(focal)), function(i) {
 }))
 
 # --- 500 bp windowed metrics -------------------------------------------------
+# Upstream tools spell these differently (VCF-kit writes TajimaD, not TAJD). Resolve the
+# wanted column by name first, then by pattern, so this chunk runs standalone against
+# whatever the read chunk above produced.
+resolve.col <- function(d, valcol) {
+  if (valcol %in% names(d)) return(valcol)
+  pat <- c(TAJD = "taj", PI = "^pi$", OBS_HET = "obs.?het", EXP_HET = "exp.?het")[[valcol]]
+  hit <- if (length(pat)) grep(pat, names(d), ignore.case = TRUE, value = TRUE) else character(0)
+  if (!length(hit))
+    stop("column '", valcol, "' not found; have: ", paste(names(d), collapse = ", "))
+  message("resolve.col: using '", hit[1], "' for '", valcol, "'")
+  hit[1]
+}
+
 grab.focal <- function(d, valcol, metric) {
   d  <- as.data.frame(d)
   vc <- resolve.col(d, valcol)
