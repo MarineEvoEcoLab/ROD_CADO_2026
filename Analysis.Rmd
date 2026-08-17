@@ -1205,8 +1205,13 @@ the label drawn on panel A, `name` is the short gene label on the inset strip. R
 chunk from here down after editing — the 500 bp re-binning is derived from this table.
 
 ```{r}
-flank <- 20000   # bp either side of the focal SNP; oyster LD decays well within this
-binsize <- 500   # bp, for the focal-region diversity tracks
+flank   <- 20000  # bp either side of the focal SNP; oyster LD decays well within this
+binsize <- 500    # bp, for the focal-region diversity tracks (used by the bash chunk below)
+
+# Display smoothing for the panel C diversity tracks: centred rolling mean over this many
+# bins. 1 = raw. At binsize 500 this makes 3 = 1.5 kb, 5 = 2.5 kb, 9 = 4.5 kb.
+# Change this and re-run panel C only — no need to touch the bash chunk.
+smooth.bins <- 5
 
 focal <- data.frame(
   region = c("i", "ii", "iii", "iv"),
@@ -1227,6 +1232,9 @@ withr::with_options(c(scipen = 10),
   write.table(data.frame(focal$CHROM, focal$POS - flank - 1, focal$POS + flank),
               "./analysis/figure2/focal_regions.bed",
               sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE))
+
+# the bash chunk reads the bin size from here, so it can never drift from `binsize`
+write(binsize, "./analysis/figure2/binsize.txt")
 ```
 
 ## Re-bin diversity metrics at 500 bp within the focal regions
@@ -1239,7 +1247,7 @@ source activate ROD_CADO
 cd ./analysis/figure2
 
 VCF=../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz
-BIN=500
+BIN=$(cat binsize.txt)   # set by the `binsize` variable in the R chunk above
 
 sort -k1,1 -k2,2n focal_regions.bed > focal_regions.sorted.bed
 
@@ -1407,10 +1415,20 @@ grab.focal <- function(d, valcol, metric) {
   }))
 }
 
-fig2.ins.df <- rbind(
+# centred rolling mean across `smooth.bins` bins, per region x treatment; edges keep raw values
+smooth.track <- function(dt, k) {
+  if (k <= 1) return(dt)
+  dt[order(rel), value := {
+    sm <- frollmean(value, k, align = "center", na.rm = TRUE)
+    fifelse(is.na(sm), value, sm)
+  }, by = .(region, Treatment, metric)]
+  dt[]
+}
+
+fig2.ins.df <- smooth.track(rbind(
   grab.focal(pi.focal,   "PI",      "pi"),
   grab.focal(het.focal,  "OBS_HET", "H[o]"),
-  grab.focal(tajd.focal, "TAJD",    "Tajima*minute*s~italic(D)"))
+  grab.focal(tajd.focal, "TAJD",    "Tajima*minute*s~italic(D)")), smooth.bins)
 
 metric.lv <- c("italic(F)[ST]", "pi", "H[o]", "Tajima*minute*s~italic(D)")
 fig2.ins.df[, `:=`(metric    = factor(metric, levels = metric.lv),
