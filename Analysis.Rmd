@@ -1218,7 +1218,7 @@ focal <- data.frame(
   CHROM  = c("NC_035787.1", "NC_035781.1", "NC_035783.1", "NC_035787.1"),
   POS    = c(60756955,      22817136,      12033923,      43870981),
   gene   = c("LOC111108439","LOC111118776","LOC111129890","LOC111107402"),
-  name   = c("semaphorin rec.", "Cul2-RING Ub ligase", "PP2A reg. sub.", "HDAC6"),
+  name   = c("semaphorin", "Cul2-RING Ub", "PP2A reg. sub.", "HDAC6"),
   stringsAsFactors = FALSE)
 
 focal$CHR <- chr.map[focal$CHROM]
@@ -1319,31 +1319,70 @@ stopifnot(all(c("CHROM","BIN_START","BIN_END","Treatment") %in% names(pi.focal))
 
 ```
 
-## Panel A — genome-wide FST
+## Panel A — genome-wide LFMM association
+
+Uses the LFMM ridge p-values rather than *F*~ST~. The p-value vector is in the same SNP
+order as `totalloci` (both derive from the biallelic subset of `SNP.TRSdp10g1.FIL.vcf.gz`),
+which is the mapping the outlier-index chunks above already rely on.
+
+Set `lfmm.var` to choose which environmental variable is shown. `Combined` is the sequential
+CADO + ROD treatment, which carries 107 of the 115 LFMM outliers and is the comparison the
+Discussion is built around.
 
 ```{r}
+lfmm.var <- "Combined"     # "Combined" | "CADO" | "Disease"
+
+lfmm.loci <- fread("./analysis/outlier_detection/totalloci",
+                   header = FALSE, col.names = c("CHROM", "POS"))
+
+lfmm.pv <- switch(lfmm.var,
+  Combined = as.numeric(oys_rod_CB.pv$calibrated.pvalue[, 1]),
+  CADO     = as.numeric(adj.pv_rod_CADO),
+  Disease  = as.numeric(adj.pv_rod_DIS))
+lfmm.qv <- switch(lfmm.var,
+  Combined = as.numeric(oys_rod_CB.qv),
+  CADO     = as.numeric(oys_rod_CADO.qv),
+  Disease  = as.numeric(oys_rod_DIS.qv))
+
+# the join is positional, so a length mismatch means the VCF changed under one of them
+stopifnot(nrow(lfmm.loci) == length(lfmm.pv),
+          length(lfmm.pv) == length(lfmm.qv))
+
+lfmm.man <- data.table(CHROM = lfmm.loci$CHROM, POS = lfmm.loci$POS,
+                       P = lfmm.pv, Q = lfmm.qv)[CHROM %in% names(chr.map)]
+lfmm.man[, `:=`(CHR = chr.map[CHROM], LOGP = -log10(P))]
+setorder(lfmm.man, CHR, POS)
+
+# cumulative x-position, same rank-based scheme as the FST Manhattan above
+lfmm.man[, BPcum := seq_len(.N)]
+lfmm.axis <- lfmm.man[, .(center = mean(BPcum)), by = CHR]
+
 focal$BPcum <- vapply(seq_len(nrow(focal)), function(i) {
-  sub <- don[don$CHROM == focal$CHROM[i], ]
-  sub$BPcum[which.min(abs(sub$BIN_END - focal$POS[i]))]
+  sub <- lfmm.man[CHROM == focal$CHROM[i]]
+  sub$BPcum[which.min(abs(sub$POS - focal$POS[i]))]
 }, numeric(1))
 
-fst.ymax <- max(don$WEIGHTED_FST, na.rm = TRUE) * 1.20
+# p-value corresponding to the q < 0.1 cutoff actually used for outlier calling
+fdr.line <- if (any(lfmm.man$Q < 0.1)) -log10(max(lfmm.man[Q < 0.1, P])) else NA_real_
+lfmm.ymax <- max(lfmm.man$LOGP, na.rm = TRUE) * 1.20
 
-fig2.man <- ggplot(don, aes(x = BPcum, y = WEIGHTED_FST)) +
+fig2.man <- ggplot(lfmm.man, aes(x = BPcum, y = LOGP)) +
   geom_point(aes(color = as.factor(CHR)), alpha = 0.25, size = 0.4) +
-  geom_point(data = subset(don, OUTLIER == TRUE), aes(color = as.factor(CHR)),
+  geom_point(data = lfmm.man[Q < 0.1], aes(color = as.factor(CHR)),
              shape = 17, alpha = 1, size = 1.6) +
+  {if (!is.na(fdr.line)) geom_hline(yintercept = fdr.line, linetype = "dashed",
+                                    linewidth = 0.3, colour = "grey40")} +
   geom_segment(data = focal, aes(x = BPcum, xend = BPcum,
-                                 y = fst.ymax * 0.80, yend = fst.ymax * 0.90),
+                                 y = lfmm.ymax * 0.80, yend = lfmm.ymax * 0.90),
                inherit.aes = FALSE, linewidth = 0.4) +
-  geom_text(data = focal, aes(x = BPcum, y = fst.ymax * 0.97, label = region),
+  geom_text(data = focal, aes(x = BPcum, y = lfmm.ymax * 0.97, label = region),
             inherit.aes = FALSE, size = 3, fontface = "bold") +
   scale_color_manual(values = rep(c("#7d5577", "#52374e"), 5)) +
-  scale_x_continuous(label = axisdf$CHR, breaks = axisdf$center, expand = c(0.005, 0)) +
-  scale_y_continuous(expand = c(0, 0),
-                     limits = c(min(don$WEIGHTED_FST, na.rm = TRUE) - 0.005, fst.ymax)) +
+  scale_x_continuous(label = lfmm.axis$CHR, breaks = lfmm.axis$center,
+                     expand = c(0.005, 0)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, lfmm.ymax)) +
   guides(colour = "none", alpha = "none", fill = "none") +
-  labs(x = "Chromosome", y = "*F<sub>ST</sub>*") +
+  labs(x = "Chromosome", y = "−log<sub>10</sub>(*p*)") +
   theme_classic(base_size = 10) +
   theme(axis.title.y = element_markdown())
 
@@ -1355,15 +1394,14 @@ fig2.man
 ```{r}
 fig2.pca <- ggplot(pca_data_combined, aes(x = PC1, y = PC2, color = Treatment)) +
   geom_point(size = 2, alpha = 0.85) +
-  stat_ellipse(linewidth = 0.5) +
   scale_color_manual(values = col_pal) +
   labs(x = paste0("PC1 (", round(pve_combined[1], 1), "%)"),
        y = paste0("PC2 (", round(pve_combined[2], 1), "%)")) +
   annotate("text", x = -Inf, y = -Inf,
            label = paste("PERMANOVA p =", format(p_value_combined, digits = 2)),
            hjust = -0.15, vjust = -1, size = 3) +
-  theme_classic(base_size = 10) +
-  theme(legend.title = element_text(face = "bold"))
+  guides(colour = "none") +   # panel C supplies the single collected legend
+  theme_classic(base_size = 10)
 
 fig2.pca
 ```
@@ -1449,10 +1487,11 @@ fig2.ins <- ggplot(fig2.ins.df, aes(x = rel, y = value, colour = Treatment)) +
   facet_grid(metric ~ region, scales = "free_y",
              labeller = labeller(metric = label_parsed)) +
   scale_colour_manual(values = col_pal, name = "Treatment") +
+  scale_x_continuous(breaks = c(-10, 0, 10)) +
   labs(x = "Distance from focal outlier SNP (kb)", y = NULL) +
   theme_classic(base_size = 9) +
   theme(strip.background = element_blank(),
-        strip.text.x = element_text(size = 7, face = "bold", lineheight = 1.1),
+        strip.text.x = element_text(size = 6.5, face = "bold", lineheight = 1.1),
         strip.text.y = element_text(size = 8),
         panel.spacing = unit(3, "pt"))
 
@@ -1463,7 +1502,7 @@ fig2.ins
 
 ```{r}
 fig2 <- fig2.man / (fig2.pca | fig2.ins) +
-  plot_layout(heights = c(1, 2.6), widths = c(0.8, 1.2), guides = "collect") +
+  plot_layout(heights = c(1, 2.6), widths = c(0.62, 1.38), guides = "collect") +
   plot_annotation(tag_levels = "A") &
   theme(legend.position = "bottom",
         plot.tag = element_text(face = "bold", size = 12))
