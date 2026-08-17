@@ -1140,6 +1140,301 @@ outlier.pca.overlap.plot <- ggplot(pca_data_overlap, aes(x = PC1, y = PC2, color
 
 outlier.pca.overlap.plot
 ```
+# Figure 2 — Genome-wide differentiation, outlier PCA, and focal outlier regions
+
+Assembles a full-page figure: (A) genome-wide *F*~ST~ Manhattan with OutFLANK outliers
+flagged, (B) PCA of the union outlier set (LFMM2 ∪ OutFLANK), and (C) a grid of focal
+outlier regions showing per-SNP *F*~ST~, π, observed heterozygosity, and Tajima's *D*
+by treatment.
+
+Because LD decays over hundreds of bp to a few kb in *C. virginica*, panel C uses a ±20 kb
+window and re-bins the diversity metrics at 500 bp within the focal regions only. The
+genome-wide 10 kb bins used elsewhere in this document are far too coarse at this scale —
+they give three points per window.
+
+Depends on objects built above: `don` / `axisdf` (Manhattan), `pca_data_combined`,
+`pve_combined`, `p_value_combined` (PCA), and `mydf` (per-SNP *F*~ST~).
+
+## Candidate outlier table
+
+Union outlier set with FST, the method(s) that flagged it, and the overlapping gene.
+Use this to choose the focal regions plotted in panel C.
+
+```{r}
+chr.map <- c(NC_035780.1 = 1, NC_035781.1 = 2, NC_035782.1 = 3, NC_035783.1 = 4,
+             NC_035784.1 = 5, NC_035785.1 = 6, NC_035786.1 = 7, NC_035787.1 = 8,
+             NC_035788.1 = 9, NC_035789.1 = 10)
+
+outliers.lfmm <- fread("./analysis/outlier_detection/results/outliers_lfmm2.bed",
+                       header = FALSE, col.names = c("CHROM", "START", "POS"))
+outliers.of   <- fread("./analysis/FST/Outflank_outliers.bed",
+                       header = FALSE, col.names = c("CHROM", "START", "POS"))
+
+genes.bed <- fread("./other_files/sorted.ref3.0.gene.bed", header = FALSE, sep = "\t",
+                   select = c(1, 2, 3, 10), col.names = c("CHROM", "GSTART", "GEND", "ATTR"))
+genes.bed[, GENE := str_match(ATTR, "gene=([^;]+)")[, 2]]
+
+outlier.candidates <- unique(rbind(outliers.lfmm, outliers.of)[, .(CHROM, POS)])[
+  order(CHROM, POS)]
+outlier.candidates[, `:=`(
+  CHR  = chr.map[CHROM],
+  LFMM = paste(CHROM, POS) %in% paste(outliers.lfmm$CHROM, outliers.lfmm$POS),
+  OF   = paste(CHROM, POS) %in% paste(outliers.of$CHROM,   outliers.of$POS))]
+
+# gene the SNP sits inside (0-based start, so compare against POS - 1)
+outlier.candidates[, GENE := mapply(function(cc, pp) {
+  g <- genes.bed[CHROM == cc & GSTART <= pp - 1 & GEND > pp - 1, GENE]
+  paste(unique(g), collapse = "; ")
+}, CHROM, POS)]
+
+# per-SNP FST, joined from the Manhattan table
+fst.snp <- as.data.table(mydf)[, .(CHROM, POS = BIN_END, FST = WEIGHTED_FST)]
+setkey(fst.snp, CHROM, POS)
+outlier.candidates <- fst.snp[outlier.candidates, on = .(CHROM, POS)]
+
+outlier.candidates[order(-FST)][1:25]
+```
+
+`FST` is `NA` for LFMM-only outliers that fall below the maf 0.05 threshold used for the
+OutFLANK set — those SNPs are absent from the *F*~ST~ Manhattan by construction.
+
+## Focal regions for panel C
+
+**Edit this table to change which loci appear as insets.** One row per region; `region` is
+the label drawn on panel A, `name` is the short gene label on the inset strip. Re-run every
+chunk from here down after editing — the 500 bp re-binning is derived from this table.
+
+```{r}
+flank <- 20000   # bp either side of the focal SNP; oyster LD decays well within this
+binsize <- 500   # bp, for the focal-region diversity tracks
+
+focal <- data.frame(
+  region = c("i", "ii", "iii", "iv"),
+  CHROM  = c("NC_035787.1", "NC_035781.1", "NC_035783.1", "NC_035787.1"),
+  POS    = c(60756955,      22817136,      12033923,      43870981),
+  gene   = c("LOC111108439","LOC111118776","LOC111129890","LOC111107402"),
+  name   = c("semaphorin rec.", "Cul2-RING Ub ligase", "PP2A reg. sub.", "HDAC6"),
+  stringsAsFactors = FALSE)
+
+focal$CHR <- chr.map[focal$CHROM]
+focal$lab <- paste0(focal$region, ". ", focal$name, "\nChr", focal$CHR)
+focal
+```
+
+```{r}
+dir.create("./analysis/figure2", showWarnings = FALSE)
+withr::with_options(c(scipen = 10),
+  write.table(data.frame(focal$CHROM, focal$POS - flank - 1, focal$POS + flank),
+              "./analysis/figure2/focal_regions.bed",
+              sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE))
+```
+
+## Re-bin diversity metrics at 500 bp within the focal regions
+
+Same tools and options as the genome-wide sections above, restricted to the focal regions
+and binned at `binsize` instead of 10 kb. Cheap — seconds, not hours.
+
+```{bash eval=FALSE}
+source activate ROD_CADO
+cd ./analysis/figure2
+
+VCF=../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz
+BIN=500
+
+sort -k1,1 -k2,2n focal_regions.bed > focal_regions.sorted.bed
+
+# --- per-SNP FST in the focal regions -----------------------------------
+bedtools intersect -a <(sort -k1,1 -k2,2n ../FST/FST_Outflank.bed) \
+                   -b focal_regions.sorted.bed -wa -sorted \
+  | mawk 'BEGIN{print "CHROM\tPOS\tFST\tOUTLIER"} {print $1 "\t" $3 "\t" $4 "\t" $5}' \
+  > focal_fst_persnp.txt
+
+# --- nucleotide diversity ------------------------------------------------
+for T in con-con str-con con-rod str-rod; do
+  bcftools view --threads 20 -R focal_regions.sorted.bed $VCF \
+      -S ../diversity_statistics/nd/${T}.txt \
+    | vcftools --vcf - --window-pi $BIN --out ${T}.focal
+done
+
+# --- Tajima's D ----------------------------------------------------------
+source activate vkrc
+for T in con-con str-con con-rod str-rod; do
+  bcftools view --threads 20 -R focal_regions.sorted.bed $VCF \
+      -S ../diversity_statistics/nd/${T}.txt \
+    | vk tajima $BIN $BIN - > ${T}.focal.tajima
+done
+source activate ROD_CADO
+
+# --- observed heterozygosity --------------------------------------------
+# popStats output is already per-site, so this only re-bins the existing *-treat.het files
+bedtools makewindows -b focal_regions.sorted.bed -w $BIN > focal_bins.bed
+for T in CONCON STRCON CONROD STRROD; do
+  bedtools intersect -a focal_bins.bed \
+                     -b <(sort -k1,1 -k2,2n ../diversity_statistics/het/${T}-treat.het) \
+                     -wa -wb \
+    | bedtools merge -d -1 -c 7,8 -o mean \
+    | mawk -v t=$T '{print $0 "\t" t}' > ${T}.focal.het
+done
+cat <(echo -e "CHROM\tBIN_START\tBIN_END\tEXP_HET\tOBS_HET\tTREATMENT") \
+    CONCON.focal.het STRCON.focal.het CONROD.focal.het STRROD.focal.het > focal.het.txt
+```
+
+```{r}
+treat.files <- c(CONCON = "con-con", STRCON = "str-con",
+                 CONROD = "con-rod", STRROD = "str-rod")
+treat.lv <- c("CONCON", "STRCON", "CONROD", "STRROD")
+
+fst.focal <- fread("./analysis/figure2/focal_fst_persnp.txt", header = TRUE)
+
+pi.focal <- rbindlist(lapply(names(treat.files), function(t) {
+  d <- fread(paste0("./analysis/figure2/", treat.files[t], ".focal.windowed.pi"))
+  d$Treatment <- t; d }))
+
+tajd.focal <- rbindlist(lapply(names(treat.files), function(t) {
+  d <- fread(paste0("./analysis/figure2/", treat.files[t], ".focal.tajima"))
+  d$Treatment <- t; d }))
+
+het.focal <- fread("./analysis/figure2/focal.het.txt", header = TRUE)
+setnames(het.focal, "TREATMENT", "Treatment")
+
+for (d in list(pi.focal, tajd.focal, het.focal))
+  d[, Treatment := factor(Treatment, levels = treat.lv)]
+```
+
+## Panel A — genome-wide FST
+
+```{r}
+focal$BPcum <- vapply(seq_len(nrow(focal)), function(i) {
+  sub <- don[don$CHROM == focal$CHROM[i], ]
+  sub$BPcum[which.min(abs(sub$BIN_END - focal$POS[i]))]
+}, numeric(1))
+
+fst.ymax <- max(don$WEIGHTED_FST, na.rm = TRUE) * 1.20
+
+fig2.man <- ggplot(don, aes(x = BPcum, y = WEIGHTED_FST)) +
+  geom_point(aes(color = as.factor(CHR)), alpha = 0.25, size = 0.4) +
+  geom_point(data = subset(don, OUTLIER == TRUE), aes(color = as.factor(CHR)),
+             shape = 17, alpha = 1, size = 1.6) +
+  geom_segment(data = focal, aes(x = BPcum, xend = BPcum,
+                                 y = fst.ymax * 0.80, yend = fst.ymax * 0.90),
+               inherit.aes = FALSE, linewidth = 0.4) +
+  geom_text(data = focal, aes(x = BPcum, y = fst.ymax * 0.97, label = region),
+            inherit.aes = FALSE, size = 3, fontface = "bold") +
+  scale_color_manual(values = rep(c("#7d5577", "#52374e"), 5)) +
+  scale_x_continuous(label = axisdf$CHR, breaks = axisdf$center, expand = c(0.005, 0)) +
+  scale_y_continuous(expand = c(0, 0),
+                     limits = c(min(don$WEIGHTED_FST, na.rm = TRUE) - 0.005, fst.ymax)) +
+  guides(colour = "none", alpha = "none", fill = "none") +
+  labs(x = "Chromosome", y = "*F<sub>ST</sub>*") +
+  theme_classic(base_size = 10) +
+  theme(axis.title.y = element_markdown())
+
+fig2.man
+```
+
+## Panel B — PCA of union outlier loci
+
+```{r}
+fig2.pca <- ggplot(pca_data_combined, aes(x = PC1, y = PC2, color = Treatment)) +
+  geom_point(size = 2, alpha = 0.85) +
+  stat_ellipse(linewidth = 0.5) +
+  scale_color_manual(values = col_pal) +
+  labs(x = paste0("PC1 (", round(pve_combined[1], 1), "%)"),
+       y = paste0("PC2 (", round(pve_combined[2], 1), "%)")) +
+  annotate("text", x = -Inf, y = -Inf,
+           label = paste("PERMANOVA p =", format(p_value_combined, digits = 2)),
+           hjust = -0.15, vjust = -1, size = 3) +
+  theme_classic(base_size = 10) +
+  theme(legend.title = element_text(face = "bold"))
+
+fig2.pca
+```
+
+## Panel C — focal outlier regions
+
+The *F*~ST~ row plots every SNP in the window as a grey point, with a 51-SNP centred rolling
+mean as the line (~1.3 kb at this SNP density) and the focal outlier as a red triangle.
+The lower three rows are the 500 bp re-binned tracks.
+
+```{r}
+# --- per-SNP FST + rolling mean ---------------------------------------------
+fst.rows <- rbindlist(lapply(seq_len(nrow(focal)), function(i) {
+  f <- focal[i, ]
+  s <- fst.focal[CHROM == f$CHROM & abs(POS - f$POS) <= flank][order(POS)]
+  if (!nrow(s)) return(NULL)
+  data.table(region = f$lab, rel = (s$POS - f$POS) / 1000, value = s$FST,
+             roll = frollmean(s$FST, 51, align = "center"),
+             is.focal = s$POS == f$POS)
+}))
+
+# --- 500 bp windowed metrics -------------------------------------------------
+grab.focal <- function(d, valcol, metric) {
+  d <- as.data.frame(d)
+  rbindlist(lapply(seq_len(nrow(focal)), function(i) {
+    f <- focal[i, ]
+    s <- d[d$CHROM == f$CHROM &
+           d$BIN_START >= f$POS - flank & d$BIN_END <= f$POS + flank, ]
+    if (!nrow(s)) return(NULL)
+    data.table(region = f$lab,
+               rel = ((s$BIN_START + s$BIN_END) / 2 - f$POS) / 1000,
+               value = s[[valcol]],
+               Treatment = as.character(s$Treatment),
+               metric = metric)
+  }))
+}
+
+fig2.ins.df <- rbind(
+  grab.focal(pi.focal,   "PI",      "pi"),
+  grab.focal(het.focal,  "OBS_HET", "H[o]"),
+  grab.focal(tajd.focal, "TAJD",    "Tajima*minute*s~italic(D)"))
+
+metric.lv <- c("italic(F)[ST]", "pi", "H[o]", "Tajima*minute*s~italic(D)")
+fig2.ins.df[, `:=`(metric    = factor(metric, levels = metric.lv),
+                   Treatment = factor(Treatment, levels = treat.lv),
+                   region    = factor(region, levels = focal$lab))]
+fst.rows[, `:=`(metric = factor("italic(F)[ST]", levels = metric.lv),
+                region = factor(region, levels = focal$lab))]
+
+fig2.ins <- ggplot(fig2.ins.df, aes(x = rel, y = value, colour = Treatment)) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.3, colour = "grey55") +
+  geom_point(data = fst.rows, inherit.aes = FALSE, aes(rel, value),
+             colour = "grey78", size = 0.2, alpha = 0.35) +
+  geom_line(data = fst.rows, inherit.aes = FALSE, aes(rel, roll),
+            colour = "grey20", linewidth = 0.5, na.rm = TRUE) +
+  geom_point(data = fst.rows[is.focal == TRUE], inherit.aes = FALSE, aes(rel, value),
+             shape = 17, size = 1.9, colour = "#B22222") +
+  geom_line(linewidth = 0.45, na.rm = TRUE) +
+  facet_grid(metric ~ region, scales = "free_y",
+             labeller = labeller(metric = label_parsed)) +
+  scale_colour_manual(values = col_pal, name = "Treatment") +
+  labs(x = "Distance from focal outlier SNP (kb)", y = NULL) +
+  theme_classic(base_size = 9) +
+  theme(strip.background = element_blank(),
+        strip.text.x = element_text(size = 7, face = "bold", lineheight = 1.1),
+        strip.text.y = element_text(size = 8),
+        panel.spacing = unit(3, "pt"))
+
+fig2.ins
+```
+
+## Assemble
+
+```{r}
+fig2 <- fig2.man / (fig2.pca | fig2.ins) +
+  plot_layout(heights = c(1, 2.6), widths = c(0.8, 1.2), guides = "collect") +
+  plot_annotation(tag_levels = "A") &
+  theme(legend.position = "bottom",
+        plot.tag = element_text(face = "bold", size = 12))
+
+fig2
+```
+
+```{r}
+png(filename = "figures/Figure2.png", type = "cairo", units = "in",
+    width = 7.5, height = 9, res = 300, bg = "transparent")
+print(fig2)
+null <- dev.off()
+```
 
 # Gene Ontology Enrichment Analysis — Combined Outliers (LFMM2 ∪ OutFLANK)
 Original analysis by Amy Zyck, edits by JBP
