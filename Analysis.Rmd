@@ -1142,39 +1142,85 @@ outlier.pca.overlap.plot
 ```
 # Figure 2 — Genome-wide LFMM association and focal outlier regions
 
-Assembles a full-page figure: (A) genome-wide LFMM Manhattan with FDR outliers flagged,
-and (B) a grid of focal outlier regions showing the per-SNP association signal, π, observed
-heterozygosity, and Tajima's *D* by treatment. The outlier PCA is optional — set
-`show.pca <- TRUE` to include it as a third panel.
+Panel A is the genome-wide LFMM Manhattan; panel B is a grid of focal outlier regions
+showing the per-SNP association signal, π, observed heterozygosity and Tajima's *D* by
+treatment. The outlier PCA is optional (`show.pca`).
 
-Because LD decays over hundreds of bp to a few kb in *C. virginica*, the focal panels use a
-±20 kb window and re-bin the diversity metrics at 500 bp within those regions only. The
-genome-wide 10 kb bins used elsewhere are far too coarse at this scale.
+Focal loci can be chosen two ways (`focal.by`):
+
+* `"pvalue"` — the most significant SNPs, thinned by distance. Purely association-driven,
+  fully reproducible from this document alone.
+* `"file"` — read an explicit list from `analysis/figure2/focal_loci.csv` (columns `CHROM`,
+  `POS`, optional `name`). Use this to plot a hand-chosen or externally ranked set.
+
+The STRROD-separation ranking that produced one such list lives outside this document, in
+`exploratory/separation_score.R`, and is not tracked in the repository. It is kept separate
+deliberately: it ranks loci on the same statistics these panels then display, so separation
+visible in the panels is a consequence of the selection, not evidence for it. Panels chosen
+that way are exemplars — any genome-wide claim rests on the outlier test and the
+treatment-level statistics, not on these columns.
+
+Because LD decays over hundreds of bp to a few kb in *C. virginica*, the panels use a ±20 kb
+window and re-bin the diversity metrics at 500 bp. The genome-wide 10 kb bins used elsewhere
+are far too coarse at this scale.
 
 Depends on objects built above: the LFMM fits (`oys_rod_CB.pv`, `adj.pv_rod_CADO`,
-`adj.pv_rod_DIS` and their q-values), `mydf` (per-SNP *F*~ST~), and — only when
-`show.pca = TRUE` — `pca_data_combined`, `pve_combined`, `p_value_combined`.
+`adj.pv_rod_DIS` and their q-values), and — only when `show.pca = TRUE` —
+`pca_data_combined`, `pve_combined`, `p_value_combined`.
 
 ## Settings
 
-Everything tunable in one place. Changing `flank`, `binsize`, `n.focal` or `lfmm.var` means
-re-running the bash chunk below; changing `smooth.bins`, `show.pca` or `ins.top` does not.
+`flank` and `binsize` require re-running the bash chunk. Everything else is R-side only.
 
 ```{r}
-lfmm.var    <- "Combined"  # "Combined" | "CADO" | "Disease" — variable shown in panel A
-n.focal     <- 8           # number of focal regions to inset
-min.sep     <- 50000       # bp; keeps two panels from showing the same locus twice
-genic.only  <- TRUE       # TRUE skips SNPs with no overlapping gene when picking focal loci
-flank       <- 20000       # bp either side of the focal SNP
-binsize     <- 2500         # bp, for the focal-region diversity tracks
-smooth.bins <- 5           # centred rolling mean over this many bins; 1 = raw
-show.pca    <- FALSE       # TRUE puts the outlier PCA back in as a panel
-ins.top     <- "FST"      # top row of the focal panels: "LFMM" or "FST"
+lfmm.var      <- "Combined"   # "Combined" | "CADO" | "Disease" — variable shown in panel A
+focal.by      <- "pvalue"     # "pvalue" | "file" (analysis/figure2/focal_loci.csv)
+n.focal       <- 6            # number of focal regions to inset
+min.sep       <- 50000        # bp; keeps two panels from showing the same locus twice
+genic.only    <- FALSE        # TRUE skips SNPs with no overlapping gene (pvalue mode)
+flank         <- 20000        # bp either side of the focal SNP
+binsize       <- 500          # bp, for the focal-region diversity tracks
+smooth.bins   <- 5            # centred rolling mean over this many bins; 1 = raw
+show.pca      <- FALSE        # TRUE puts the outlier PCA back in as a panel
+ins.top       <- "LFMM"       # top row of the focal panels: "LFMM" or "FST"
+
+# --- panel A rendering speed -------------------------------------------------
+# The dominant cost is that every inline chunk preview redraws the millions of points.
+# With preview = FALSE the panels are built but not printed, so the Manhattan is drawn
+# once (into the PNG) instead of three times. Set TRUE while iterating on panel design.
+preview <- FALSE
+
+# Truncate panel A: draw only SNPs with p <= man.pmax. Unlike random thinning this leaves
+# no density artefact — the cloud above the cutoff is drawn in full, the y-axis simply
+# starts at -log10(man.pmax). Benchmarked on 8.4M points: p<=0.2 is 6x faster, p<=0.1 is
+# 12x, p<=0.05 is 25x. Set man.pmax <- 1 to draw every SNP.
+man.pmax <- 0.1
 
 chr.map <- c(NC_035780.1 = 1, NC_035781.1 = 2, NC_035782.1 = 3, NC_035783.1 = 4,
              NC_035784.1 = 5, NC_035785.1 = 6, NC_035786.1 = 7, NC_035787.1 = 8,
              NC_035788.1 = 9, NC_035789.1 = 10)
 treat.lv <- c("CONCON", "STRCON", "CONROD", "STRROD")
+
+# Upstream tools spell these differently (VCF-kit writes TajimaD, not TAJD). Resolve the
+# wanted column by name first, then by pattern, so downstream chunks do not care.
+resolve.col <- function(d, valcol) {
+  if (valcol %in% names(d)) return(valcol)
+  pat <- c(TAJD = "taj", PI = "^pi$", OBS_HET = "obs.?het", EXP_HET = "exp.?het")[[valcol]]
+  hit <- if (length(pat)) grep(pat, names(d), ignore.case = TRUE, value = TRUE) else character(0)
+  if (!length(hit))
+    stop("column '", valcol, "' not found; have: ", paste(names(d), collapse = ", "))
+  hit[1]
+}
+
+# ragg renders large point clouds far faster than cairo; fall back if it is not installed
+open.png <- function(file, width, height, res) {
+  if (requireNamespace("ragg", quietly = TRUE))
+    ragg::agg_png(file, width = width, height = height, units = "in",
+                  res = res, background = "transparent")
+  else
+    png(file, type = "cairo", units = "in", width = width, height = height,
+        res = res, bg = "transparent")
+}
 ```
 
 ## Gene annotation
@@ -1190,8 +1236,7 @@ gene.at <- function(cc, pp) {
 }
 
 # Readable labels transcribed from the Discussion draft (AZ & CC). NOT machine-verified
-# against NCBI — extend this vector as products are confirmed. Anything absent falls back
-# to the LOC id.
+# against NCBI — extend as products are confirmed; anything absent falls back to the LOC id.
 gene.labels <- c(
   LOC111121590 = "NF-kB p105",        LOC111125856 = "Rho GAP 7",
   LOC111102361 = "Rho GAP 20",        LOC111129890 = "PP2A reg. sub.",
@@ -1204,14 +1249,14 @@ gene.labels <- c(
   LOC111118850 = "titin / SRRM2",     LOC111119752 = "fibrillin-2",
   LOC111122175 = "polycystin-2",      LOC111125411 = "protocadherin b8",
   LOC111108439 = "semaphorin rec.",   LOC111118776 = "Cul2-RING Ub")
+
 ```
 
 ## LFMM p-values
 
 The p-value vector is in the same SNP order as `totalloci` (both derive from the biallelic
 subset of `SNP.TRSdp10g1.FIL.vcf.gz`), which is the mapping the outlier-index chunks above
-already rely on. `Combined` is the sequential CADO + ROD treatment and carries 107 of the
-115 LFMM outliers.
+already rely on.
 
 ```{r}
 lfmm.loci <- fread("./analysis/outlier_detection/totalloci",
@@ -1239,57 +1284,38 @@ lfmm.axis <- lfmm.man[, .(center = mean(BPcum)), by = CHR]
 cat(sum(lfmm.man$Q < 0.1), "SNPs at q < 0.1 for", lfmm.var, "\n")
 ```
 
-## Focal regions
+## Candidate regions
 
-Taken straight off the top of the Manhattan: the `n.focal` most significant SNPs, greedily
-thinned so no two are within `min.sep` of each other. This is what keeps the inset columns
-consistent with the peaks marked in panel A — hand-picking them by *F*~ST~ is what made the
-marks land off the peaks previously.
-
-To override, replace `focal` with your own data.frame carrying `CHROM`, `POS` and `name`,
-then run the rest of the chunk.
+The candidate pool for `focal.by = "separation"` is the union outlier set (LFMM ∪ OutFLANK).
+The bash chunk computes 500 bp tracks across **all** of these, so scoring and plotting read
+the same files and no second pass is needed. 150 loci x 40 kb is ~6 Mb of sequence — seconds.
 
 ```{r}
-cand <- lfmm.man[order(P)]
-keep <- integer(0)
-for (i in seq_len(nrow(cand))) {
-  if (length(keep) >= n.focal) break
-  if (length(keep) &&
-      any(cand$CHROM[keep] == cand$CHROM[i] & abs(cand$POS[keep] - cand$POS[i]) < min.sep))
-    next
-  if (genic.only && !nzchar(gene.at(cand$CHROM[i], cand$POS[i]))) next
-  keep <- c(keep, i)
-}
-if (length(keep) < n.focal)
-  warning("only ", length(keep), " loci met the selection criteria")
+outliers.lfmm <- fread("./analysis/outlier_detection/results/outliers_lfmm2.bed",
+                       header = FALSE, col.names = c("CHROM", "START", "POS"))
+outliers.of   <- fread("./analysis/FST/Outflank_outliers.bed",
+                       header = FALSE, col.names = c("CHROM", "START", "POS"))
 
-focal <- as.data.frame(cand[keep, .(CHROM, POS, CHR, P, Q, LOGP, BPcum)])
-focal$gene   <- mapply(gene.at, focal$CHROM, focal$POS)
-focal$name   <- ifelse(focal$gene %in% names(gene.labels),
-                       gene.labels[focal$gene],
-                       ifelse(nzchar(focal$gene), focal$gene, "intergenic"))
-focal$region <- tolower(as.character(as.roman(seq_len(nrow(focal)))))
-focal$lab    <- paste0(focal$region, ". ", focal$name, "\nChr", focal$CHR)
+cands <- unique(rbind(outliers.lfmm, outliers.of)[, .(CHROM, POS)])[
+  CHROM %in% names(chr.map)][order(CHROM, POS)]
+cands[, CHR := chr.map[CHROM]]
+cands <- lfmm.man[, .(CHROM, POS, P, Q, LOGP, BPcum)][cands, on = .(CHROM, POS)]
 
-focal[, c("region", "CHROM", "POS", "CHR", "P", "gene", "name")]
-```
-
-```{r}
 dir.create("./analysis/figure2", showWarnings = FALSE)
 withr::with_options(c(scipen = 10),
-  write.table(data.frame(focal$CHROM, focal$POS - flank - 1, focal$POS + flank),
-              "./analysis/figure2/focal_regions.bed",
+  write.table(data.frame(cands$CHROM, pmax(0, cands$POS - flank - 1), cands$POS + flank),
+              "./analysis/figure2/candidate_regions.bed",
               sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE))
-
-# the bash chunk reads the bin size from here, so it can never drift from `binsize`
 write(binsize, "./analysis/figure2/binsize.txt")
+
+cat(nrow(cands), "candidate outlier loci\n")
 ```
 
-## Re-bin diversity metrics within the focal regions
+## Re-bin diversity metrics across the candidate regions
 
-Same tools and options as the genome-wide sections above, restricted to the focal regions
-and binned at `binsize` instead of 10 kb. Cheap — seconds, not hours. **Re-run this whenever
-`focal`, `flank` or `binsize` changes.**
+Same tools and options as the genome-wide sections above, restricted to the candidate
+regions and binned at `binsize` instead of 10 kb. **Re-run whenever `flank` or `binsize`
+changes.**
 
 ```{bash eval=FALSE}
 source activate ROD_CADO
@@ -1298,17 +1324,17 @@ cd ./analysis/figure2
 VCF=../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz
 BIN=$(cat binsize.txt)   # set by the `binsize` variable in the R chunk above
 
-sort -k1,1 -k2,2n focal_regions.bed > focal_regions.sorted.bed
+sort -k1,1 -k2,2n candidate_regions.bed | bedtools merge -i - > regions.bed
 
-# --- per-SNP FST in the focal regions (only needed when ins.top = "FST") --
+# --- per-SNP FST in the candidate regions (only needed when ins.top = "FST") --
 bedtools intersect -a <(sort -k1,1 -k2,2n ../FST/FST_Outflank.bed) \
-                   -b focal_regions.sorted.bed -wa -sorted \
+                   -b regions.bed -wa -sorted \
   | mawk 'BEGIN{print "CHROM\tPOS\tFST\tOUTLIER"} {print $1 "\t" $3 "\t" $4 "\t" $5}' \
   > focal_fst_persnp.txt
 
 # --- nucleotide diversity ------------------------------------------------
 for T in con-con str-con con-rod str-rod; do
-  bcftools view --threads 20 -R focal_regions.sorted.bed $VCF \
+  bcftools view --threads 20 -R regions.bed $VCF \
       -S ../diversity_statistics/nd/${T}.txt \
     | vcftools --vcf - --window-pi $BIN --out ${T}.focal
 done
@@ -1316,7 +1342,7 @@ done
 # --- Tajima's D ----------------------------------------------------------
 source activate vkrc
 for T in con-con str-con con-rod str-rod; do
-  bcftools view --threads 20 -R focal_regions.sorted.bed $VCF \
+  bcftools view --threads 20 -R regions.bed $VCF \
       -S ../diversity_statistics/nd/${T}.txt \
     | vk tajima $BIN $BIN - > ${T}.focal.tajima
 done
@@ -1324,7 +1350,7 @@ source activate ROD_CADO
 
 # --- observed heterozygosity --------------------------------------------
 # popStats output is already per-site, so this only re-bins the existing *-treat.het files
-bedtools makewindows -b focal_regions.sorted.bed -w $BIN > focal_bins.bed
+bedtools makewindows -b regions.bed -w $BIN > focal_bins.bed
 for T in CONCON STRCON CONROD STRROD; do
   bedtools intersect -a focal_bins.bed \
                      -b <(sort -k1,1 -k2,2n ../diversity_statistics/het/${T}-treat.het) \
@@ -1364,15 +1390,81 @@ stopifnot(all(c("CHROM","BIN_START","BIN_END","Treatment") %in% names(pi.focal))
           all(c("CHROM","BIN_START","BIN_END","Treatment") %in% names(het.focal)))
 ```
 
-## Panel A — genome-wide LFMM association
+## Focal regions
 
 ```{r}
-# p-value corresponding to the q < 0.1 cutoff actually used for outlier calling
+if (focal.by == "file") {
+  f.path <- "./analysis/figure2/focal_loci.csv"
+  if (!file.exists(f.path))
+    stop(f.path, " not found — either create it or set focal.by <- \"pvalue\"")
+  fl <- fread(f.path)
+  stopifnot(all(c("CHROM", "POS") %in% names(fl)))
+  focal <- as.data.frame(head(fl, n.focal))
+  focal$CHR  <- chr.map[focal$CHROM]
+  focal$gene <- mapply(gene.at, focal$CHROM, focal$POS)
+  if (!"name" %in% names(focal))
+    focal$name <- ifelse(focal$gene %in% names(gene.labels), gene.labels[focal$gene],
+                  ifelse(nzchar(focal$gene), focal$gene, "intergenic"))
+  focal$sub <- paste0("Chr", focal$CHR,
+                      if ("theme" %in% names(focal))
+                        ifelse(is.na(focal$theme), "", paste0(" \u00b7 ", focal$theme)) else "")
+  # position on the Manhattan
+  focal$BPcum <- vapply(seq_len(nrow(focal)), function(i) {
+    sub <- lfmm.man[CHROM == focal$CHROM[i]]
+    sub$BPcum[which.min(abs(sub$POS - focal$POS[i]))] }, numeric(1))
+  cat("focal loci read from", f.path, "\n")
+
+} else {
+  cand2 <- lfmm.man[order(P)]
+  keep <- integer(0)
+  for (i in seq_len(nrow(cand2))) {
+    if (length(keep) >= n.focal) break
+    if (length(keep) && any(cand2$CHROM[keep] == cand2$CHROM[i] &
+                            abs(cand2$POS[keep] - cand2$POS[i]) < min.sep)) next
+    if (genic.only && !nzchar(gene.at(cand2$CHROM[i], cand2$POS[i]))) next
+    keep <- c(keep, i)
+  }
+  focal <- as.data.frame(cand2[keep])
+  focal$gene <- mapply(gene.at, focal$CHROM, focal$POS)
+  focal$name <- ifelse(focal$gene %in% names(gene.labels), gene.labels[focal$gene],
+                ifelse(nzchar(focal$gene), focal$gene, "intergenic"))
+  focal$sub  <- paste0("Chr", focal$CHR)
+}
+
+if (nrow(focal) < n.focal)
+  warning("only ", nrow(focal), " loci met the selection criteria")
+
+focal$region <- tolower(as.character(as.roman(seq_len(nrow(focal)))))
+focal$lab    <- paste0(focal$region, ". ", focal$name, "\n", focal$sub)
+
+focal[, intersect(c("region","CHROM","POS","CHR","name","theme","sep_score","P"), names(focal))]
+```
+
+## Panel A — genome-wide LFMM association
+
+With `man.pmax < 1` the panel is a truncated Manhattan: only SNPs at or below that p-value
+are drawn and the y-axis starts at −log10(man.pmax). **Say so in the figure legend.** The
+trade-off is that the bulk of the null distribution is no longer visible, so a reader cannot
+eyeball inflation from this panel — worth pairing with a QQ plot in the supplement,
+especially since the GIF for the Combined variable was 1.41.
+
+```{r}
+if (!"BPcum" %in% names(focal))
+  focal$BPcum <- vapply(seq_len(nrow(focal)), function(i) {
+    sub <- lfmm.man[CHROM == focal$CHROM[i]]
+    sub$BPcum[which.min(abs(sub$POS - focal$POS[i]))] }, numeric(1))
+
+man.plot <- lfmm.man[P <= man.pmax]
+cat(sprintf("panel A: drawing %d of %d SNPs (%.1f%%, p <= %g); y-axis truncated at %.2f\n",
+            nrow(man.plot), nrow(lfmm.man), 100 * nrow(man.plot) / nrow(lfmm.man),
+            man.pmax, -log10(man.pmax)))
+
 fdr.line  <- if (any(lfmm.man$Q < 0.1)) -log10(max(lfmm.man[Q < 0.1, P])) else NA_real_
+lfmm.ymin <- if (man.pmax < 1) -log10(man.pmax) else 0
 lfmm.ymax <- max(lfmm.man$LOGP, na.rm = TRUE) * 1.20
 
-fig2.man <- ggplot(lfmm.man, aes(x = BPcum, y = LOGP)) +
-  geom_point(aes(color = as.factor(CHR)), alpha = 0.25, size = 0.4) +
+fig2.man <- ggplot(man.plot, aes(x = BPcum, y = LOGP)) +
+  geom_point(aes(color = as.factor(CHR)), alpha = 0.25, size = 0.4, shape = 16) +
   geom_point(data = lfmm.man[Q < 0.1], aes(color = as.factor(CHR)),
              shape = 17, alpha = 1, size = 1.6) +
   {if (!is.na(fdr.line)) geom_hline(yintercept = fdr.line, linetype = "dashed",
@@ -1385,18 +1477,18 @@ fig2.man <- ggplot(lfmm.man, aes(x = BPcum, y = LOGP)) +
   scale_color_manual(values = rep(c("#7d5577", "#52374e"), 5)) +
   scale_x_continuous(label = lfmm.axis$CHR, breaks = lfmm.axis$center,
                      expand = c(0.005, 0)) +
-  scale_y_continuous(expand = c(0, 0), limits = c(0, lfmm.ymax)) +
+  scale_y_continuous(expand = c(0, 0), limits = c(lfmm.ymin, lfmm.ymax)) +
   guides(colour = "none", alpha = "none", fill = "none") +
   labs(x = "Chromosome", y = "-log<sub>10</sub>(*p*)") +
   theme_classic(base_size = 10) +
   theme(axis.title.y = element_markdown())
 
-
+if (preview) fig2.man
 ```
 
 ## Optional PCA panel
 
-Note the ascertainment issue: the union outlier set includes 107 SNPs that LFMM selected on
+Ascertainment caveat: the union outlier set includes 107 SNPs that LFMM selected on
 `Combined_Bin`, so a PCA of those loci partly recovers the variable they were selected from,
 and the PERMANOVA inherits the same circularity. This is why the panel is off by default.
 
@@ -1412,28 +1504,23 @@ if (show.pca) {
     annotate("text", x = -Inf, y = -Inf,
              label = paste("PERMANOVA p =", format(p_value_combined, digits = 2)),
              hjust = -0.15, vjust = -1, size = 3) +
-    guides(colour = "none") +   # the focal panel supplies the single collected legend
+    guides(colour = "none") +
     theme_classic(base_size = 10)
 }
 
-fig2.pca
+if (preview) fig2.pca
 ```
 
 ## Focal region panels
 
-Top row is the per-SNP association signal (or *F*~ST~ if `ins.top = "FST"`) as grey points
-with a 51-SNP centred rolling mean and the focal SNP in red. The lower three rows are the
-`binsize` bp tracks, smoothed over `smooth.bins` bins for display.
-
 ```{r}
-top.lab <- if (ins.top == "LFMM") "-log[10](italic(p))" else "italic(F)[ST]"
+top.lab   <- if (ins.top == "LFMM") "-log[10](italic(p))" else "italic(F)[ST]"
 metric.lv <- c(top.lab, "pi", "H[o]", "Tajima*minute*s~italic(D)")
 
 top.src <- if (ins.top == "LFMM") {
   lfmm.man[, .(CHROM, POS, VAL = LOGP)]
 } else {
-  as.data.table(fread("./analysis/figure2/focal_fst_persnp.txt",
-                      header = TRUE))[, .(CHROM, POS, VAL = FST)]
+  fread("./analysis/figure2/focal_fst_persnp.txt", header = TRUE)[, .(CHROM, POS, VAL = FST)]
 }
 
 top.rows <- rbindlist(lapply(seq_len(nrow(focal)), function(i) {
@@ -1441,22 +1528,9 @@ top.rows <- rbindlist(lapply(seq_len(nrow(focal)), function(i) {
   s <- top.src[CHROM == f$CHROM & abs(POS - f$POS) <= flank][order(POS)]
   if (!nrow(s)) return(NULL)
   data.table(region = f$lab, rel = (s$POS - f$POS) / 1000, value = s$VAL,
-             roll = frollmean(s$VAL, 51, align = "center"),
+             roll = frollmean(s$VAL, min(51, nrow(s)), align = "center"),
              is.focal = s$POS == f$POS)
 }))
-
-# Upstream tools spell these differently (VCF-kit writes TajimaD, not TAJD). Resolve the
-# wanted column by name first, then by pattern, so this chunk runs standalone against
-# whatever the read chunk above produced.
-resolve.col <- function(d, valcol) {
-  if (valcol %in% names(d)) return(valcol)
-  pat <- c(TAJD = "taj", PI = "^pi$", OBS_HET = "obs.?het", EXP_HET = "exp.?het")[[valcol]]
-  hit <- if (length(pat)) grep(pat, names(d), ignore.case = TRUE, value = TRUE) else character(0)
-  if (!length(hit))
-    stop("column '", valcol, "' not found; have: ", paste(names(d), collapse = ", "))
-  message("resolve.col: using '", hit[1], "' for '", valcol, "'")
-  hit[1]
-}
 
 grab.focal <- function(d, valcol, metric) {
   d  <- as.data.frame(d)
@@ -1498,7 +1572,7 @@ top.rows[, `:=`(metric = factor(top.lab, levels = metric.lv),
 fig2.ins <- ggplot(fig2.ins.df, aes(x = rel, y = value, colour = Treatment)) +
   geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.3, colour = "grey55") +
   geom_point(data = top.rows, inherit.aes = FALSE, aes(rel, value),
-             colour = "grey78", size = 0.2, alpha = 0.35) +
+             colour = "grey78", size = 0.2, alpha = 0.35, shape = 16) +
   geom_line(data = top.rows, inherit.aes = FALSE, aes(rel, roll),
             colour = "grey20", linewidth = 0.5, na.rm = TRUE) +
   geom_point(data = top.rows[is.focal == TRUE], inherit.aes = FALSE, aes(rel, value),
@@ -1515,7 +1589,7 @@ fig2.ins <- ggplot(fig2.ins.df, aes(x = rel, y = value, colour = Treatment)) +
         strip.text.y = element_text(size = 8),
         panel.spacing = unit(3, "pt"))
 
-fig2.ins
+if (preview) fig2.ins
 ```
 
 ## Assemble
@@ -1525,23 +1599,21 @@ fig2 <- if (show.pca) {
   fig2.man / (fig2.pca | fig2.ins) +
     plot_layout(heights = c(1, 2.6), widths = c(0.62, 1.38), guides = "collect")
 } else {
-  fig2.man / fig2.ins +
-    plot_layout(heights = c(1, 2.4), guides = "collect")
+  fig2.man / fig2.ins + plot_layout(heights = c(1, 2.4), guides = "collect")
 }
 
 fig2 <- fig2 + plot_annotation(tag_levels = "A") &
-  theme(legend.position = "right",
+  theme(legend.position = "bottom",
         plot.tag = element_text(face = "bold", size = 12))
 
-fig2
+if (preview) fig2
 ```
 
 ```{r}
 fig.w <- if (show.pca) 7.5 else max(7.5, 1.55 * nrow(focal))
 fig.h <- if (show.pca) 9 else 8
 
-png(filename = "figures/Figure2.png", type = "cairo", units = "in",
-    width = fig.w, height = fig.h, res = 300, bg = "transparent")
+open.png("figures/Figure2.png", width = fig.w, height = fig.h, res = 300)
 print(fig2)
 null <- dev.off()
 ```
