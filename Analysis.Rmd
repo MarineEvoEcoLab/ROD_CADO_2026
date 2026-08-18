@@ -1175,14 +1175,16 @@ Depends on objects built above: the LFMM fits (`oys_rod_CB.pv`, `adj.pv_rod_CADO
 ```{r}
 lfmm.var      <- "Combined"   # "Combined" | "CADO" | "Disease" — variable shown in panel A
 focal.by      <- "pvalue"     # "pvalue" | "file" (analysis/figure2/focal_loci.csv)
-n.focal       <- 6            # number of focal regions to inset
+n.focal       <- 6            # max panels in "pvalue" mode (ignored in "file" mode)
 min.sep       <- 50000        # bp; keeps two panels from showing the same locus twice
+merge.within  <- 1000         # bp; focal SNPs closer than this share one panel (0 = never)
 genic.only    <- FALSE        # TRUE skips SNPs with no overlapping gene (pvalue mode)
 flank         <- 20000        # bp either side of the focal SNP
 binsize       <- 500          # bp, for the focal-region diversity tracks
 smooth.bins   <- 5            # centred rolling mean over this many bins; 1 = raw
 show.pca      <- FALSE        # TRUE puts the outlier PCA back in as a panel
 ins.top       <- "LFMM"       # top row of the focal panels: "LFMM" or "FST"
+strip.theme   <- NA           # show the GO theme on the panel strip; NA = only if <= 6 panels
 
 # --- panel A rendering speed -------------------------------------------------
 # The dominant cost is that every inline chunk preview redraws the millions of points.
@@ -1392,28 +1394,24 @@ stopifnot(all(c("CHROM","BIN_START","BIN_END","Treatment") %in% names(pi.focal))
 
 ## Focal regions
 
+Focal SNPs within `merge.within` bp of each other are drawn in a single panel: the window is
+centred on their midpoint and every member SNP gets its own marker. Adjacent outliers a few
+bp apart are the common case — merging them removes a duplicate panel rather than adding
+information, so the panel count drops accordingly.
+
 ```{r}
 if (focal.by == "file") {
   f.path <- "./analysis/figure2/focal_loci.csv"
   if (!file.exists(f.path))
     stop(f.path, " not found — either create it or set focal.by <- \"pvalue\"")
-  fl <- fread(f.path)
-  stopifnot(all(c("CHROM", "POS") %in% names(fl)))
-  focal <- as.data.frame(head(fl, n.focal))
-  focal$CHR  <- chr.map[focal$CHROM]
-  focal$gene <- mapply(gene.at, focal$CHROM, focal$POS)
-  if (!"name" %in% names(focal))
-    focal$name <- ifelse(focal$gene %in% names(gene.labels), gene.labels[focal$gene],
-                  ifelse(nzchar(focal$gene), focal$gene, "intergenic"))
-  focal$sub <- paste0("Chr", focal$CHR,
-                      if ("theme" %in% names(focal))
-                        ifelse(is.na(focal$theme), "", paste0(" \u00b7 ", focal$theme)) else "")
-  # position on the Manhattan
-  focal$BPcum <- vapply(seq_len(nrow(focal)), function(i) {
-    sub <- lfmm.man[CHROM == focal$CHROM[i]]
-    sub$BPcum[which.min(abs(sub$POS - focal$POS[i]))] }, numeric(1))
-  cat("focal loci read from", f.path, "\n")
-
+  snps <- fread(f.path)
+  stopifnot(all(c("CHROM", "POS") %in% names(snps)))
+  if (!"name" %in% names(snps)) {
+    snps[, gene := mapply(gene.at, CHROM, POS)]
+    snps[, name := ifelse(gene %in% names(gene.labels), gene.labels[gene],
+                   ifelse(nzchar(gene), gene, "intergenic"))]
+  }
+  cat("focal SNPs read from", f.path, "\n")
 } else {
   cand2 <- lfmm.man[order(P)]
   keep <- integer(0)
@@ -1424,20 +1422,58 @@ if (focal.by == "file") {
     if (genic.only && !nzchar(gene.at(cand2$CHROM[i], cand2$POS[i]))) next
     keep <- c(keep, i)
   }
-  focal <- as.data.frame(cand2[keep])
-  focal$gene <- mapply(gene.at, focal$CHROM, focal$POS)
-  focal$name <- ifelse(focal$gene %in% names(gene.labels), gene.labels[focal$gene],
-                ifelse(nzchar(focal$gene), focal$gene, "intergenic"))
-  focal$sub  <- paste0("Chr", focal$CHR)
+  snps <- cand2[keep, .(CHROM, POS)]
+  snps[, gene := mapply(gene.at, CHROM, POS)]
+  snps[, name := ifelse(gene %in% names(gene.labels), gene.labels[gene],
+                 ifelse(nzchar(gene), gene, "intergenic"))]
 }
 
-if (nrow(focal) < n.focal)
-  warning("only ", nrow(focal), " loci met the selection criteria")
+## --- group SNPs into panels ----------------------------------------------
+setorder(snps, CHROM, POS)
+snps[, panel := {
+  g <- cumsum(c(TRUE, diff(POS) > merge.within))
+  paste(CHROM, g)
+}, by = CHROM]
+if (merge.within <= 0) snps[, panel := paste(CHROM, POS)]
 
+uniq.or.join <- function(x) paste(unique(x), collapse = " / ")
+focal <- snps[, .(CHROM  = CHROM[1],
+                  POS    = round(mean(POS)),          # panel centre
+                  name   = uniq.or.join(name),
+                  theme  = if ("theme" %in% names(snps)) uniq.or.join(na.omit(theme)) else NA_character_,
+                  n_snps = .N,
+                  score  = if ("sep_score" %in% names(snps)) max(sep_score, na.rm = TRUE) else NA_real_),
+              by = panel]
+
+# In "file" mode the list is the choice, so every panel is kept. In "pvalue" mode
+# n.focal caps the count, strongest first.
+if (!all(is.na(focal$score))) setorder(focal, -score, na.last = TRUE)
+focal <- as.data.frame(focal)
+if (focal.by != "file") focal <- head(focal, n.focal)
+# panels and their labels both run in genome order, so i..n reads left to right in
+# panel A and in the grid below it
+focal <- focal[order(chr.map[focal$CHROM], focal$POS), ]
+
+focal$CHR <- chr.map[focal$CHROM]
+# the theme makes the strip too wide once there are many columns
+show.theme <- if (is.na(strip.theme)) nrow(focal) <= 6 else isTRUE(strip.theme)
+focal$sub <- paste0("Chr", focal$CHR,
+                    if (show.theme)
+                      ifelse(is.na(focal$theme) | !nzchar(focal$theme), "",
+                             paste0(" \u00b7 ", focal$theme))
+                    else "")
 focal$region <- tolower(as.character(as.roman(seq_len(nrow(focal)))))
 focal$lab    <- paste0(focal$region, ". ", focal$name, "\n", focal$sub)
 
-focal[, intersect(c("region","CHROM","POS","CHR","name","theme","sep_score","P"), names(focal))]
+# every member SNP, positioned relative to its panel centre — used for the markers
+focal.snps <- merge(as.data.table(snps)[, .(panel, CHROM, POS)],
+                    as.data.table(focal)[, .(panel, lab, centre = POS)],
+                    by = "panel")[, .(region = lab, CHROM, POS, rel = (POS - centre) / 1000)]
+focal.snps[, region := factor(region, levels = focal$lab)]
+
+cat(nrow(snps), "focal SNPs ->", nrow(focal), "panels",
+    sprintf("(%d merged)", nrow(snps) - nrow(focal)), "\n")
+focal[, c("region", "CHROM", "POS", "CHR", "name", "n_snps", "theme")]
 ```
 
 ## Panel A — genome-wide LFMM association
@@ -1454,6 +1490,14 @@ if (!"BPcum" %in% names(focal))
     sub <- lfmm.man[CHROM == focal$CHROM[i]]
     sub$BPcum[which.min(abs(sub$POS - focal$POS[i]))] }, numeric(1))
 
+# alternate label heights so markers close together on the axis do not overwrite each other
+gap <- diff(range(lfmm.man$BPcum)) * 0.03
+focal$tier <- 0
+if (nrow(focal) > 1)
+  for (i in 2:nrow(focal))
+    if (focal$BPcum[i] - focal$BPcum[i - 1] < gap)
+      focal$tier[i] <- 1 - focal$tier[i - 1]
+
 man.plot <- lfmm.man[P <= man.pmax]
 cat(sprintf("panel A: drawing %d of %d SNPs (%.1f%%, p <= %g); y-axis truncated at %.2f\n",
             nrow(man.plot), nrow(lfmm.man), 100 * nrow(man.plot) / nrow(lfmm.man),
@@ -1461,7 +1505,7 @@ cat(sprintf("panel A: drawing %d of %d SNPs (%.1f%%, p <= %g); y-axis truncated 
 
 fdr.line  <- if (any(lfmm.man$Q < 0.1)) -log10(max(lfmm.man[Q < 0.1, P])) else NA_real_
 lfmm.ymin <- if (man.pmax < 1) -log10(man.pmax) else 0
-lfmm.ymax <- max(lfmm.man$LOGP, na.rm = TRUE) * 1.20
+lfmm.ymax <- max(lfmm.man$LOGP, na.rm = TRUE) * 1.28
 
 fig2.man <- ggplot(man.plot, aes(x = BPcum, y = LOGP)) +
   geom_point(aes(color = as.factor(CHR)), alpha = 0.25, size = 0.4, shape = 16) +
@@ -1470,9 +1514,9 @@ fig2.man <- ggplot(man.plot, aes(x = BPcum, y = LOGP)) +
   {if (!is.na(fdr.line)) geom_hline(yintercept = fdr.line, linetype = "dashed",
                                     linewidth = 0.3, colour = "grey40")} +
   geom_segment(data = focal, aes(x = BPcum, xend = BPcum,
-                                 y = lfmm.ymax * 0.80, yend = lfmm.ymax * 0.90),
+                                 y = lfmm.ymax * 0.78, yend = lfmm.ymax * (0.88 + tier * 0.055)),
                inherit.aes = FALSE, linewidth = 0.4) +
-  geom_text(data = focal, aes(x = BPcum, y = lfmm.ymax * 0.97, label = region),
+  geom_text(data = focal, aes(x = BPcum, y = lfmm.ymax * (0.925 + tier * 0.055), label = region),
             inherit.aes = FALSE, size = 3, fontface = "bold") +
   scale_color_manual(values = rep(c("#7d5577", "#52374e"), 5)) +
   scale_x_continuous(label = lfmm.axis$CHR, breaks = lfmm.axis$center,
@@ -1529,7 +1573,7 @@ top.rows <- rbindlist(lapply(seq_len(nrow(focal)), function(i) {
   if (!nrow(s)) return(NULL)
   data.table(region = f$lab, rel = (s$POS - f$POS) / 1000, value = s$VAL,
              roll = frollmean(s$VAL, min(51, nrow(s)), align = "center"),
-             is.focal = s$POS == f$POS)
+             is.focal = s$POS %in% focal.snps[region == f$lab, POS])
 }))
 
 grab.focal <- function(d, valcol, metric) {
@@ -1570,7 +1614,8 @@ top.rows[, `:=`(metric = factor(top.lab, levels = metric.lv),
                 region = factor(region, levels = focal$lab))]
 
 fig2.ins <- ggplot(fig2.ins.df, aes(x = rel, y = value, colour = Treatment)) +
-  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.3, colour = "grey55") +
+  geom_vline(data = focal.snps, aes(xintercept = rel),
+             linetype = "dashed", linewidth = 0.3, colour = "grey55") +
   geom_point(data = top.rows, inherit.aes = FALSE, aes(rel, value),
              colour = "grey78", size = 0.2, alpha = 0.35, shape = 16) +
   geom_line(data = top.rows, inherit.aes = FALSE, aes(rel, roll),
