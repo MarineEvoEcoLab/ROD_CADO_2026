@@ -1162,14 +1162,14 @@ re-running the bash chunk below; changing `smooth.bins`, `show.pca` or `ins.top`
 
 ```{r}
 lfmm.var    <- "Combined"  # "Combined" | "CADO" | "Disease" — variable shown in panel A
-n.focal     <- 6           # number of focal regions to inset
+n.focal     <- 8           # number of focal regions to inset
 min.sep     <- 50000       # bp; keeps two panels from showing the same locus twice
 genic.only  <- TRUE       # TRUE skips SNPs with no overlapping gene when picking focal loci
 flank       <- 20000       # bp either side of the focal SNP
 binsize     <- 2500         # bp, for the focal-region diversity tracks
 smooth.bins <- 5           # centred rolling mean over this many bins; 1 = raw
 show.pca    <- FALSE       # TRUE puts the outlier PCA back in as a panel
-ins.top     <- "LFMM"      # top row of the focal panels: "LFMM" or "FST"
+ins.top     <- "FST"      # top row of the focal panels: "LFMM" or "FST"
 
 chr.map <- c(NC_035780.1 = 1, NC_035781.1 = 2, NC_035782.1 = 3, NC_035783.1 = 4,
              NC_035784.1 = 5, NC_035785.1 = 6, NC_035786.1 = 7, NC_035787.1 = 8,
