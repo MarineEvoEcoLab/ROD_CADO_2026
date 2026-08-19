@@ -1250,7 +1250,10 @@ gene.labels <- c(
   LOC111100729 = "metalloendopept.",  LOC111118036 = "cadherin-23",
   LOC111118850 = "titin / SRRM2",     LOC111119752 = "fibrillin-2",
   LOC111122175 = "polycystin-2",      LOC111125411 = "protocadherin b8",
-  LOC111108439 = "semaphorin rec.",   LOC111118776 = "Cul2-RING Ub", LOC111124421 = "UNCH/Mucin-like")
+  LOC111108439 = "semaphorin rec.",   LOC111118776 = "Cul2-RING Ub", 
+  LOC111124421 = "UNCH/Mucin-like",   LOC111136420 = "glutathione hydrolase-like",
+  LOC111099737 = "MsrB-like",         LOC111108426 = "DOCK3-like")
+
 
 ```
 
