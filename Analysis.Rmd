@@ -1175,7 +1175,7 @@ Depends on objects built above: the LFMM fits (`oys_rod_CB.pv`, `adj.pv_rod_CADO
 ```{r}
 lfmm.var      <- "Combined"   # "Combined" | "CADO" | "Disease" — variable shown in panel A
 focal.by      <- "pvalue"     # "pvalue" | "file" (analysis/figure2/focal_loci.csv)
-n.focal       <- 6            # max panels in "pvalue" mode (ignored in "file" mode)
+n.focal       <- 11            # max panels in "pvalue" mode (ignored in "file" mode)
 min.sep       <- 50000        # bp; keeps two panels from showing the same locus twice
 merge.within  <- 1000         # bp; focal SNPs closer than this share one panel (0 = never)
 genic.only    <- FALSE        # TRUE skips SNPs with no overlapping gene (pvalue mode)
