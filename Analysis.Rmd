@@ -1628,7 +1628,7 @@ fig2.ins <- ggplot(fig2.ins.df, aes(x = rel, y = value, colour = Treatment)) +
   geom_vline(data = focal.snps, aes(xintercept = rel),
              linetype = "dashed", linewidth = 0.3, colour = "grey55") +
   geom_point(data = top.rows, inherit.aes = FALSE, aes(rel, value),
-             colour = "grey78", size = 0.2, alpha = 0.35, shape = 16) +
+             colour = "grey78", size = 0.2, alpha = 0.45, shape = 16) +
   geom_line(data = top.rows, inherit.aes = FALSE, aes(rel, roll),
             colour = "grey20", linewidth = 0.5, na.rm = TRUE) +
   geom_point(data = top.rows[is.focal == TRUE], inherit.aes = FALSE, aes(rel, value),
