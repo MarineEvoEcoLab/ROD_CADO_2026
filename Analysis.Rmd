@@ -1184,7 +1184,7 @@ binsize       <- 500          # bp, for the focal-region diversity tracks
 smooth.bins   <- 8            # centred rolling mean over this many bins; 1 = raw
 show.pca      <- FALSE        # TRUE puts the outlier PCA back in as a panel
 ins.top       <- "FST"       # top row of the focal panels: "LFMM" or "FST"
-strip.theme   <- NA           # show the GO theme on the panel strip; NA = only if <= 6 panels
+strip.theme   <- NA           # show the GO theme on the panel strip; NA = always (3-row label)
 
 # --- panel A rendering speed -------------------------------------------------
 # The dominant cost is that every inline chunk preview redraws the millions of points.
@@ -1466,15 +1466,16 @@ if (focal.by != "file") focal <- head(focal, n.focal)
 focal <- focal[order(chr.map[focal$CHROM], focal$POS), ]
 
 focal$CHR <- chr.map[focal$CHROM]
-# the theme makes the strip too wide once there are many columns
-show.theme <- if (is.na(strip.theme)) nrow(focal) <= 6 else isTRUE(strip.theme)
-focal$sub <- paste0("Chr", focal$CHR,
-                    if (show.theme)
-                      ifelse(is.na(focal$theme) | !nzchar(focal$theme), "",
-                             paste0(" \u00b7 ", focal$theme))
-                    else "")
 focal$region <- tolower(as.character(as.roman(seq_len(nrow(focal)))))
-focal$lab    <- paste0(focal$region, ". ", focal$name, "\n", focal$sub)
+# 3-row strip label: index+chromosome / gene name / GO theme, stacked instead of
+# concatenated onto two lines. Each row is short on its own, so the strip width is
+# set by the longest single row rather than the longest combined string.
+show.theme <- if (is.na(strip.theme)) TRUE else isTRUE(strip.theme)
+focal$theme_row <- if (show.theme)
+  ifelse(is.na(focal$theme) | !nzchar(focal$theme), "", focal$theme) else ""
+focal$lab <- paste0(focal$region, " \u00b7 Chr", focal$CHR, "\n",
+                    focal$name, "\n",
+                    focal$theme_row)
 
 # every member SNP, positioned relative to its panel centre — used for the markers
 focal.snps <- merge(as.data.table(snps)[, .(panel, CHROM, POS)],
