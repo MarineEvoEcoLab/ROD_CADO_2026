@@ -1183,7 +1183,7 @@ flank         <- 20000        # bp either side of the focal SNP
 binsize       <- 500          # bp, for the focal-region diversity tracks
 smooth.bins   <- 10            # centred rolling mean over this many bins; 1 = raw
 show.pca      <- FALSE        # TRUE puts the outlier PCA back in as a panel
-ins.top       <- "LFMM"       # top row of the focal panels: "LFMM" or "FST"
+ins.top       <- "FST"       # top row of the focal panels: "LFMM" or "FST"
 strip.theme   <- NA           # show the GO theme on the panel strip; NA = only if <= 6 panels
 
 # --- panel A rendering speed -------------------------------------------------
