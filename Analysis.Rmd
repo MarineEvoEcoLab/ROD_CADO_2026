@@ -1278,7 +1278,18 @@ stopifnot(nrow(lfmm.loci) == length(lfmm.pv), length(lfmm.pv) == length(lfmm.qv)
 
 lfmm.man <- data.table(CHROM = lfmm.loci$CHROM, POS = lfmm.loci$POS,
                        P = lfmm.pv, Q = lfmm.qv)[CHROM %in% names(chr.map)]
-lfmm.man[, `:=`(CHR = chr.map[CHROM], LOGP = -log10(P))]
+
+# Some calibrated p-values underflow to exactly 0, which would make -log10(P) infinite and
+# blow up the panel A y-scale. Floor them at the smallest non-zero p-value observed, so they
+# plot at the top of the real range. P itself is left untouched for ranking and the table.
+# If any are floored, say so in the figure legend.
+n.zero <- sum(lfmm.man$P <= 0, na.rm = TRUE)
+p.floor <- min(lfmm.man$P[lfmm.man$P > 0], na.rm = TRUE)
+if (n.zero)
+  cat(n.zero, "p-values underflowed to 0; plotted at the smallest non-zero value,",
+      format(p.floor, digits = 3), "(-log10 =", round(-log10(p.floor), 1), ")\n")
+
+lfmm.man[, `:=`(CHR = chr.map[CHROM], LOGP = -log10(pmax(P, p.floor)))]
 setorder(lfmm.man, CHR, POS)
 lfmm.man[, BPcum := seq_len(.N)]
 lfmm.axis <- lfmm.man[, .(center = mean(BPcum)), by = CHR]
