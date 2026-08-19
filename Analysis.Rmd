@@ -1481,7 +1481,7 @@ focal$theme_row <- if (show.theme)
 # hydrolase-like", "oxidative stress / protein repair") can't run past the panel
 # width and get clipped by the strip. strip.wrap is chars/line, not inches \u2014 tune it
 # down if columns are still overflowing once there are >7 panels, up if there is room.
-strip.wrap <- 14
+strip.wrap <- 30
 wrap.row <- function(x, width = strip.wrap)
   vapply(x, function(s) paste(strwrap(s, width = width), collapse = "\n"), character(1))
 
