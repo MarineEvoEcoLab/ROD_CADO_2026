@@ -1476,9 +1476,18 @@ focal$region <- tolower(as.character(as.roman(seq_len(nrow(focal)))))
 show.theme <- if (is.na(strip.theme)) TRUE else isTRUE(strip.theme)
 focal$theme_row <- if (show.theme)
   ifelse(is.na(focal$theme) | !nzchar(focal$theme), "", focal$theme) else ""
-focal$lab <- paste0(focal$region, " \u00b7 Chr", focal$CHR, "\n",
-                    focal$name, "\n",
-                    focal$theme_row)
+
+# Word-wrap each row on its own so a single long word/phrase (e.g. "glutathione
+# hydrolase-like", "oxidative stress / protein repair") can't run past the panel
+# width and get clipped by the strip. strip.wrap is chars/line, not inches \u2014 tune it
+# down if columns are still overflowing once there are >7 panels, up if there is room.
+strip.wrap <- 14
+wrap.row <- function(x, width = strip.wrap)
+  vapply(x, function(s) paste(strwrap(s, width = width), collapse = "\n"), character(1))
+
+focal$lab <- paste0(wrap.row(paste0(focal$region, " \u00b7 Chr", focal$CHR)), "\n",
+                    wrap.row(focal$name), "\n",
+                    wrap.row(focal$theme_row))
 
 # every member SNP, positioned relative to its panel centre — used for the markers
 focal.snps <- merge(as.data.table(snps)[, .(panel, CHROM, POS)],
@@ -1628,6 +1637,15 @@ fig2.ins.df[, `:=`(metric    = factor(metric, levels = metric.lv),
 top.rows[, `:=`(metric = factor(top.lab, levels = metric.lv),
                 region = factor(region, levels = focal$lab))]
 
+# Flag panels built from 2 merged SNPs (the two adjacent-outlier cases) with a "*"
+# above their focal marker(s) in the top row, so the merge isn't silently invisible.
+# One mark per panel, placed at the higher of the (up to two) focal points — not one
+# mark per SNP, so it reads as "this panel = 2 loci" rather than a per-point flag.
+merged.lab <- focal$lab[focal$n_snps > 1]
+top.marks <- top.rows[is.focal == TRUE & region %in% merged.lab,
+                      .(rel = mean(rel), value = max(value, na.rm = TRUE)), by = region]
+if (nrow(top.marks)) top.marks[, metric := factor(top.lab, levels = metric.lv)]
+
 fig2.ins <- ggplot(fig2.ins.df, aes(x = rel, y = value, colour = Treatment)) +
   geom_vline(data = focal.snps, aes(xintercept = rel),
              linetype = "dashed", linewidth = 0.3, colour = "grey55") +
@@ -1637,8 +1655,11 @@ fig2.ins <- ggplot(fig2.ins.df, aes(x = rel, y = value, colour = Treatment)) +
             colour = "grey20", linewidth = 0.5, na.rm = TRUE) +
   geom_point(data = top.rows[is.focal == TRUE], inherit.aes = FALSE, aes(rel, value),
              shape = 17, size = 1.9, colour = "#B22222") +
+  {if (nrow(top.marks)) geom_text(data = top.marks, inherit.aes = FALSE,
+             aes(rel, value, label = "*"), vjust = 0, size = 4.5,
+             fontface = "bold", colour = "#B22222")} +
   geom_line(linewidth = 0.45, na.rm = TRUE) +
-  facet_grid(metric ~ region, scales = "free_y",
+  facet_grid(metric ~ region, scales = "free_y", strip.clip = "off",
              labeller = labeller(metric = label_parsed)) +
   scale_colour_manual(values = col_pal, name = "Treatment") +
   scale_x_continuous(breaks = c(-10, 0, 10)) +
