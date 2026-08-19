@@ -1659,7 +1659,7 @@ fig2.ins <- ggplot(fig2.ins.df, aes(x = rel, y = value, colour = Treatment)) +
              aes(rel, value, label = "*"), vjust = 0, size = 4.5,
              fontface = "bold", colour = "#B22222")} +
   geom_line(linewidth = 0.45, na.rm = TRUE) +
-  facet_grid(metric ~ region, scales = "free_y", strip.clip = "off",
+  facet_grid(metric ~ region, scales = "free_y",
              labeller = labeller(metric = label_parsed)) +
   scale_colour_manual(values = col_pal, name = "Treatment") +
   scale_x_continuous(breaks = c(-10, 0, 10)) +
