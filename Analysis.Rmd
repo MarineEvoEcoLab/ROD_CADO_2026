@@ -1179,9 +1179,9 @@ n.focal       <- 6            # max panels in "pvalue" mode (ignored in "file" m
 min.sep       <- 50000        # bp; keeps two panels from showing the same locus twice
 merge.within  <- 1000         # bp; focal SNPs closer than this share one panel (0 = never)
 genic.only    <- FALSE        # TRUE skips SNPs with no overlapping gene (pvalue mode)
-flank         <- 15000        # bp either side of the focal SNP
+flank         <- 12000        # bp either side of the focal SNP
 binsize       <- 500          # bp, for the focal-region diversity tracks
-smooth.bins   <- 8            # centred rolling mean over this many bins; 1 = raw
+smooth.bins   <- 6            # centred rolling mean over this many bins; 1 = raw
 show.pca      <- FALSE        # TRUE puts the outlier PCA back in as a panel
 ins.top       <- "FST"       # top row of the focal panels: "LFMM" or "FST"
 strip.theme   <- NA           # show the GO theme on the panel strip; NA = always (3-row label)
