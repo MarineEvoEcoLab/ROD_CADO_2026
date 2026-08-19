@@ -1,10 +1,10 @@
 CHROM,POS,name,theme,sep_score,LFMM_P,FST
 NC_035787.1,62714735,DOCK3-like,cell signalling,1.609,0,0.211
-NC_035787.1,60756955,semaphorin rec.,semaphorin / cell-cell,0.975,0,0.316
+NC_035787.1,60756955,semaphorin rec.,cell-cell,0.975,0,0.316
 NC_035783.1,12033923,PP2A reg. sub.,cell signalling,0.350,0,0.289
-NC_035784.1,18844269,GGT1-like,oxidative stress / protein repair,0.348,0,0.256
-NC_035784.1,18844273,GGT1-like,oxidative stress / protein repair,0.348,0,0.256
-NC_035781.1,19679570,titin / SRRM2,calcification / ion transport,0.222,3.0e-07,
-NC_035785.1,32344416,MsrB-like,oxidative stress / protein repair,0.257,0,0.309
-NC_035781.1,19679574,titin / SRRM2,calcification / ion transport,0.222,3.0e-07,
-
+NC_035784.1,18844269,GGT1-like,oxidative stress,0.348,0,0.256
+NC_035784.1,18844273,GGT1-like,oxidative stress,0.348,0,0.256
+NC_035781.1,19679570,titin / SRRM2,calcification,0.222,3.0e-07,
+NC_035785.1,32344416,MsrB-like,oxidative stress,0.257,0,0.309
+NC_035781.1,19679574,titin / SRRM2,calcification,0.222,3.0e-07,
+NC_035780.1,65412698,UNCH/Mucin-like,calcification,0.256,0,0.237
