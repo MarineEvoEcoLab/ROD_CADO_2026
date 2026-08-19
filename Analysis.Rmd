@@ -1470,24 +1470,33 @@ focal <- focal[order(chr.map[focal$CHROM], focal$POS), ]
 
 focal$CHR <- chr.map[focal$CHROM]
 focal$region <- tolower(as.character(as.roman(seq_len(nrow(focal)))))
-# 3-row strip label: index+chromosome / gene name / GO theme, stacked instead of
-# concatenated onto two lines. Each row is short on its own, so the strip width is
-# set by the longest single row rather than the longest combined string.
+
+# 3-row strip label: index+chromosome / gene name / GO theme. Wrapping long rows onto
+# extra lines (tried first) made the block tall and uneven panel-to-panel \u2014 reads
+# worse than it fixes. Instead each row stays a single line: themes get a short strip
+# alias below (full text is untouched everywhere else \u2014 legend, table, focal_loci.csv),
+# and any gene name over strip.name.max chars is truncated with an ellipsis as a
+# backstop. If a future theme/name is still too wide, add it to theme.strip or shorten
+# it at the source (focal_loci.csv) rather than reintroducing wrapping.
+theme.strip <- c(
+  "calcification / ion transport"     = "calcification",
+  "cell signalling"                   = "cell signalling",
+  "epigenetic / transcriptional"      = "epigenetic",
+  "oxidative stress / protein repair" = "oxidative stress",
+  "semaphorin / cell-cell"            = "semaphorin")
+strip.name.max <- 16
+
+short.theme <- function(x) unname(ifelse(x %in% names(theme.strip), theme.strip[x], x))
+short.name  <- function(x) ifelse(nchar(x) > strip.name.max,
+                                  paste0(strtrim(x, strip.name.max - 1), "\u2026"), x)
+
 show.theme <- if (is.na(strip.theme)) TRUE else isTRUE(strip.theme)
 focal$theme_row <- if (show.theme)
-  ifelse(is.na(focal$theme) | !nzchar(focal$theme), "", focal$theme) else ""
+  ifelse(is.na(focal$theme) | !nzchar(focal$theme), "", short.theme(focal$theme)) else ""
 
-# Word-wrap each row on its own so a single long word/phrase (e.g. "glutathione
-# hydrolase-like", "oxidative stress / protein repair") can't run past the panel
-# width and get clipped by the strip. strip.wrap is chars/line, not inches \u2014 tune it
-# down if columns are still overflowing once there are >7 panels, up if there is room.
-strip.wrap <- 30
-wrap.row <- function(x, width = strip.wrap)
-  vapply(x, function(s) paste(strwrap(s, width = width), collapse = "\n"), character(1))
-
-focal$lab <- paste0(wrap.row(paste0(focal$region, " \u00b7 Chr", focal$CHR)), "\n",
-                    wrap.row(focal$name), "\n",
-                    wrap.row(focal$theme_row))
+focal$lab <- paste0(focal$region, " \u00b7 Chr", focal$CHR, "\n",
+                    short.name(focal$name), "\n",
+                    focal$theme_row)
 
 # every member SNP, positioned relative to its panel centre — used for the markers
 focal.snps <- merge(as.data.table(snps)[, .(panel, CHROM, POS)],
@@ -1638,12 +1647,17 @@ top.rows[, `:=`(metric = factor(top.lab, levels = metric.lv),
                 region = factor(region, levels = focal$lab))]
 
 # Flag panels built from 2 merged SNPs (the two adjacent-outlier cases) with a "*"
-# above their focal marker(s) in the top row, so the merge isn't silently invisible.
+# beside their focal marker(s) in the top row, so the merge isn't silently invisible.
 # One mark per panel, placed at the higher of the (up to two) focal points — not one
 # mark per SNP, so it reads as "this panel = 2 loci" rather than a per-point flag.
+# Offset to the right (not above): each facet uses scales = "free_y" sized tight to
+# its own data, and the focal point is usually the local max, so nudging the mark up
+# pushed it straight past the panel's top edge and got clipped. Sideways stays inside.
+mark.dx <- 1.5   # kb; tune alongside flank/scale_x_continuous breaks if it crowds
 merged.lab <- focal$lab[focal$n_snps > 1]
 top.marks <- top.rows[is.focal == TRUE & region %in% merged.lab,
-                      .(rel = mean(rel), value = max(value, na.rm = TRUE)), by = region]
+                      .(rel = mean(rel) + mark.dx, value = max(value, na.rm = TRUE)),
+                      by = region]
 if (nrow(top.marks)) top.marks[, metric := factor(top.lab, levels = metric.lv)]
 
 fig2.ins <- ggplot(fig2.ins.df, aes(x = rel, y = value, colour = Treatment)) +
@@ -1656,7 +1670,7 @@ fig2.ins <- ggplot(fig2.ins.df, aes(x = rel, y = value, colour = Treatment)) +
   geom_point(data = top.rows[is.focal == TRUE], inherit.aes = FALSE, aes(rel, value),
              shape = 17, size = 1.9, colour = "#B22222") +
   {if (nrow(top.marks)) geom_text(data = top.marks, inherit.aes = FALSE,
-             aes(rel, value, label = "*"), vjust = 0, size = 4.5,
+             aes(rel, value, label = "*"), hjust = 0, vjust = 0.5, size = 4.5,
              fontface = "bold", colour = "#B22222")} +
   geom_line(linewidth = 0.45, na.rm = TRUE) +
   facet_grid(metric ~ region, scales = "free_y",
