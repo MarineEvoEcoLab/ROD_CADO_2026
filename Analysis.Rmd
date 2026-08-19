@@ -1179,7 +1179,7 @@ n.focal       <- 6            # max panels in "pvalue" mode (ignored in "file" m
 min.sep       <- 50000        # bp; keeps two panels from showing the same locus twice
 merge.within  <- 1000         # bp; focal SNPs closer than this share one panel (0 = never)
 genic.only    <- FALSE        # TRUE skips SNPs with no overlapping gene (pvalue mode)
-flank         <- 20000        # bp either side of the focal SNP
+flank         <- 15000        # bp either side of the focal SNP
 binsize       <- 500          # bp, for the focal-region diversity tracks
 smooth.bins   <- 10            # centred rolling mean over this many bins; 1 = raw
 show.pca      <- FALSE        # TRUE puts the outlier PCA back in as a panel
