@@ -1765,6 +1765,7 @@ Depends on `chr.map`, `treat.lv` and `open.png` from the Figure 2 settings chunk
 meadow.color      <- "HO"      # "HO" log2 Ho ratio | "PI" log2 pi ratio (Duffin et al.) | "FIS" delta F_IS
 meadow.ref        <- "CONCON"  # denominator of every comparison
 meadow.q          <- 0.01      # tail used for both the FST and the ratio cut-offs
+meadow.min.snps   <- 10        # drop windows with fewer variant sites before any cut-off
 meadow.mark.tests <- TRUE      # ring windows that contain an LFMM2 / OutFLANK outlier
 meadow.win        <- 10000     # must match the bash chunk and the diversity windows
 ```
@@ -1801,7 +1802,9 @@ meadow <- rbindlist(lapply(comps, function(tr) {
   d[, COMP := tr]
 }))
 
-meadow <- meadow[CHROM %in% names(chr.map) & FST >= 0 &
+# Windows with 1-4 SNPs give quantized FST and extreme or infinite ratios at once, so
+# without this they fill both tails (first run: 129 of 147 candidates had <= 4 SNPs).
+meadow <- meadow[CHROM %in% names(chr.map) & FST >= 0 & N_VARIANTS >= meadow.min.snps &
                  !is.na(trt.val) & !is.na(ref.val)]   # tutorial drops negative FST too
 
 # ratio: log2(treatment / control); FIS: plain difference. A zero on one side gives an
