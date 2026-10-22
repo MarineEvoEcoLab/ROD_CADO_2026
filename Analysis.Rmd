@@ -1713,6 +1713,170 @@ print(fig2)
 null <- dev.off()
 ```
 
+# Meadow plots — pairwise F~ST~ by diversity ratio
+
+Genome-wide companion to Figure 2, after Duffin et al. (2026, *Evolution*, in press; doi:10.1093/evolut/qpag146;
+tutorial at https://paigeduffin.github.io/meadow_plot_tutorial/). For each treatment versus
+the control (CONCON), windowed Weir & Cockerham F~ST~ is plotted along the genome and each
+window is coloured by the log~2~ ratio of a diversity statistic (treatment / control).
+Candidate windows are those in the top `meadow.q` of F~ST~ **and** either tail of the ratio,
+within each comparison (the tutorial's rule).
+
+Differences from the tutorial, and why:
+
+* **Colour defaults to observed heterozygosity, not π.** One generation of selective mortality
+  shifts genotype frequencies before it moves allele frequencies, and π is nearly flat across
+  treatments here. `meadow.color = "PI"` gives the original π-ratio plot; `"FIS"` plots
+  ΔF~IS~ (treatment − control) instead of a ratio.
+* **10 kb non-overlapping windows**, matching the π, H~o~ and Tajima's *D* windows already
+  computed above (tutorial: 15 kb windows, 5 kb step), so every statistic shares one grid.
+* **F~ST~ from VCFtools**, not pixy. pixy needs an all-sites VCF; F~ST~ is computed from
+  variant sites either way, and this keeps it on the same filtered VCF as everything else.
+* **Shared colour scale across comparisons** (tutorial: one scale per comparison), so colour
+  means the same thing in every row.
+
+Percentile outliers always return windows, even under the null. These are descriptive; the
+outlier claims rest on LFMM2 and OutFLANK. Windows that contain one of those outliers are
+ringed (`meadow.mark.tests`) so the two can be compared directly.
+
+## Pairwise windowed F~ST~
+
+```{bash, eval=FALSE}
+source activate ROD_CADO
+mkdir -p ./analysis/FST/pairwise
+cd ./analysis/FST/pairwise
+
+# population files written in the Nucleotide diversity section
+for t in str-con con-rod str-rod; do
+  vcftools --gzvcf ../../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz \
+    --weir-fst-pop ../../diversity_statistics/nd/con-con.txt \
+    --weir-fst-pop ../../diversity_statistics/nd/$t.txt \
+    --fst-window-size 10000 --fst-window-step 10000 \
+    --out con-con_vs_$t &
+done
+wait
+```
+
+## Settings
+
+Depends on `chr.map`, `treat.lv` and `open.png` from the Figure 2 settings chunk.
+
+```{r}
+meadow.color      <- "HO"      # "HO" log2 Ho ratio | "PI" log2 pi ratio (Duffin et al.) | "FIS" delta F_IS
+meadow.ref        <- "CONCON"  # denominator of every comparison
+meadow.q          <- 0.01      # tail used for both the FST and the ratio cut-offs
+meadow.mark.tests <- TRUE      # ring windows that contain an LFMM2 / OutFLANK outlier
+meadow.win        <- 10000     # must match the bash chunk and the diversity windows
+```
+
+## Build the window table
+
+```{r}
+trt.file <- function(x) sub("^(...)(...)$", "\\1-\\2", tolower(x))   # STRROD -> str-rod
+comps    <- setdiff(treat.lv, meadow.ref)
+
+# Per-treatment diversity on the shared 10 kb grid, keyed on the 1-based window start
+# (VCFtools convention). The *.het.10kb.bed files are headerless bedtools output with
+# 0-based starts: CHROM, start, end, expected het, observed het.
+div <- rbindlist(lapply(treat.lv, function(tr) {
+  h <- fread(paste0("analysis/diversity_statistics/het/", tr, ".het.10kb.bed"), header = FALSE,
+             col.names = c("CHROM", "BIN_START", "BIN_END", "EXP_HET", "OBS_HET"))
+  h[, BIN_START := BIN_START + 1L]
+  p <- fread(paste0("analysis/diversity_statistics/nd/", trt.file(tr), ".windowed.pi"))
+  d <- merge(h[, .(CHROM, BIN_START, EXP_HET, OBS_HET)], p[, .(CHROM, BIN_START, PI)],
+             by = c("CHROM", "BIN_START"), all = TRUE)
+  d[, `:=`(TREAT = tr, FIS = ifelse(EXP_HET > 0, 1 - OBS_HET / EXP_HET, NA_real_))]
+}))
+
+stat.col <- c(HO = "OBS_HET", PI = "PI", FIS = "FIS")[[meadow.color]]
+ref <- div[TREAT == meadow.ref, .(CHROM, BIN_START, ref.val = get(stat.col))]
+
+meadow <- rbindlist(lapply(comps, function(tr) {
+  f <- fread(sprintf("analysis/FST/pairwise/%s_vs_%s.windowed.weir.fst",
+                     trt.file(meadow.ref), trt.file(tr)))
+  d <- merge(f[, .(CHROM, BIN_START, N_VARIANTS, FST = WEIGHTED_FST)],
+             div[TREAT == tr, .(CHROM, BIN_START, trt.val = get(stat.col))],
+             by = c("CHROM", "BIN_START"))
+  d <- merge(d, ref, by = c("CHROM", "BIN_START"))
+  d[, COMP := tr]
+}))
+
+meadow <- meadow[CHROM %in% names(chr.map) & FST >= 0 &
+                 !is.na(trt.val) & !is.na(ref.val)]   # tutorial drops negative FST too
+
+# ratio: log2(treatment / control); FIS: plain difference. A zero on one side gives an
+# infinite ratio — kept and drawn as an asterisk, as in the tutorial, rather than dropped.
+if (meadow.color == "FIS") {
+  meadow[, RATIO := trt.val - ref.val]
+} else {
+  meadow <- meadow[!(trt.val == 0 & ref.val == 0)]
+  meadow[, RATIO := log2(trt.val / ref.val)]
+}
+meadow[, INF := is.infinite(RATIO)]
+
+# candidate windows, within each comparison
+meadow[, `:=`(fst.cut = quantile(FST, 1 - meadow.q),
+              lo.cut  = quantile(RATIO[!INF], meadow.q),
+              hi.cut  = quantile(RATIO[!INF], 1 - meadow.q)), by = COMP]
+meadow[, CAND := FST >= fst.cut & (INF | RATIO <= lo.cut | RATIO >= hi.cut)]
+
+# windows holding a formal outlier (LFMM2 union OutFLANK)
+tests <- fread("analysis/outlier_detection/results/outliers_lfmm2_outflank_combined.bed",
+               header = FALSE, col.names = c("CHROM", "START", "END"))
+tests <- unique(tests[, .(CHROM, BIN_START = (START %/% meadow.win) * meadow.win + 1L)])
+meadow[, TEST := FALSE][tests, TEST := TRUE, on = c("CHROM", "BIN_START")]
+
+meadow[, `:=`(CHR  = factor(chr.map[CHROM], levels = sort(unique(chr.map))),
+              MID  = (BIN_START + meadow.win / 2) / 1e6,
+              COMP = factor(paste(COMP, "vs", meadow.ref),
+                            levels = paste(comps, "vs", meadow.ref)))]
+
+meadow.summary <- meadow[, .(windows       = .N,
+                             candidates    = sum(CAND),
+                             cand.low      = sum(CAND & RATIO < 0),
+                             cand.high     = sum(CAND & RATIO > 0),
+                             test.windows  = sum(TEST),
+                             cand.and.test = sum(CAND & TEST)), by = COMP]
+meadow.summary
+fwrite(meadow[CAND == TRUE, .(COMP, CHROM, BIN_START, BIN_END = BIN_START + meadow.win - 1,
+                              N_VARIANTS, FST, trt.val, ref.val, RATIO, TEST)],
+       "analysis/FST/pairwise/meadow_candidate_windows.csv")
+```
+
+## Plot
+
+```{r}
+lim <- quantile(abs(meadow$RATIO[!meadow$INF]), 0.995, na.rm = TRUE)
+meadow[, RATIO.plot := pmax(pmin(RATIO, lim), -lim)]   # infinite ratios plot at the ends
+
+leg.title <- c(HO  = "log<sub>2</sub> H<sub>o</sub> ratio<br>(treatment / control)",
+               PI  = "log<sub>2</sub> &pi; ratio<br>(treatment / control)",
+               FIS = "&Delta;F<sub>IS</sub><br>(treatment - control)")[[meadow.color]]
+
+meadow.plot <- ggplot(meadow, aes(MID, FST, colour = RATIO.plot)) +
+  geom_point(data = meadow[CAND == FALSE], size = 0.35, alpha = 0.35) +
+  geom_point(data = meadow[CAND == TRUE & INF == FALSE], size = 1.6) +
+  geom_point(data = meadow[CAND == TRUE & INF == TRUE], shape = 8, size = 1.6) +
+  { if (meadow.mark.tests)
+      geom_point(data = meadow[TEST == TRUE], shape = 21, size = 2.6, stroke = 0.4,
+                 colour = "black", fill = NA) } +
+  scale_colour_gradient2(low = "#2166AC", mid = "#D9D9D9", high = "#B2182B",
+                         midpoint = 0, limits = c(-lim, lim), name = leg.title) +
+  facet_grid(COMP ~ CHR, scales = "free_x", space = "free_x", switch = "x") +
+  scale_x_continuous(breaks = NULL, expand = c(0.01, 0)) +
+  labs(x = "Chromosome", y = "Weighted F<sub>ST</sub> (10 kb)") +
+  theme(panel.spacing.x = unit(0.5, "mm"), panel.spacing.y = unit(3, "mm"),
+        strip.placement = "outside", strip.background = element_blank(),
+        strip.text.y = element_text(angle = 0, hjust = 0),
+        axis.title.y = ggtext::element_markdown(),
+        legend.title = ggtext::element_markdown(size = 9),
+        panel.background = element_rect(fill = NA, colour = "grey85", linewidth = 0.3))
+
+open.png("figures/Figure.X.meadow.png", width = 10, height = 6, res = 300)
+print(meadow.plot)
+invisible(dev.off())
+```
+
 # Gene Ontology Enrichment Analysis — Combined Outliers (LFMM2 ∪ OutFLANK)
 Original analysis by Amy Zyck, edits by JBP
 
