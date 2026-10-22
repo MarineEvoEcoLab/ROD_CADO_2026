@@ -1713,9 +1713,9 @@ print(fig2)
 null <- dev.off()
 ```
 
-# Meadow plots — pairwise F~ST~ by diversity ratio
+# Figure 3 — Meadow plots: pairwise F~ST~ by H~o~ ratio
 
-Genome-wide companion to Figure 2, after Duffin et al. (2026, *Evolution*, in press; doi:10.1093/evolut/qpag146;
+Genome-wide companion to Figure 2's focal regions, after Duffin et al. (2026, *Evolution*, in press; doi:10.1093/evolut/qpag146;
 tutorial at https://paigeduffin.github.io/meadow_plot_tutorial/). For each treatment versus
 the control (CONCON), windowed Weir & Cockerham F~ST~ is plotted along the genome and each
 window is coloured by the log~2~ ratio of a diversity statistic (treatment / control).
@@ -1875,9 +1875,144 @@ meadow.plot <- ggplot(meadow, aes(MID, FST, colour = RATIO.plot)) +
         legend.title = ggtext::element_markdown(size = 9),
         panel.background = element_rect(fill = NA, colour = "grey85", linewidth = 0.3))
 
-open.png("figures/Figure.X.meadow.png", width = 10, height = 6, res = 300)
+open.png("figures/Figure3.png", width = 10, height = 6, res = 300)
 print(meadow.plot)
 invisible(dev.off())
+```
+
+## Read-depth check for copy-number variants
+
+High-H~o~ stacks can be copy-number variants (CNVs) rather than selection: reads from two
+diverged copies that map to one locus look heterozygous. A collapsed paralog raises depth in
+every treatment. A CNV carried by a family that is over-represented in one treatment raises
+depth in that treatment only. So for every candidate window this compares per-sample
+read depth in the treatment against the control, and checks the control's depth against the
+genome.
+
+Depth is the per-sample `FORMAT/DP` at variant sites, averaged per 10 kb window and divided by
+that sample's genome-wide median window depth (removes library-size differences). Expect
+about 1.5x for a duplication carried in one copy, and about 2x in two.
+
+```{bash, eval=FALSE}
+source activate ROD_CADO
+mkdir -p ./analysis/diversity_statistics/depth
+cd ./analysis/diversity_statistics/depth
+
+VCF=../../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz
+bcftools query -l $VCF > samples.txt
+
+# per sample x 10 kb window: mean DP and number of sites with a DP call.
+# One pass over the VCF; holds ~40k windows x 80 samples in memory.
+bcftools query -f '%CHROM\t%POS[\t%DP]\n' $VCF | \
+  mawk -v W=10000 'BEGIN{OFS="\t"}
+    { b = int(($2 - 1) / W) * W + 1
+      for (i = 3; i <= NF; i++) if ($i != ".") { k = $1 OFS b OFS (i - 2); s[k] += $i; n[k]++ } }
+    END { for (k in s) print k, s[k] / n[k], n[k] }' | \
+  gzip > depth.10kb.sample.txt.gz
+```
+
+```{r}
+dp.min.run <- 3        # candidate windows needed to call a region (stack) for the plot
+dp.gap     <- 50000    # bp; candidate windows closer than this join the same region
+dp.pad     <- 100000   # bp of flank drawn either side of a region
+dp.min.sites <- 5      # sites with a DP call needed for a window to count toward a sample's median
+dp.dir     <- "analysis/diversity_statistics/depth"
+
+samples <- fread(file.path(dp.dir, "samples.txt"), header = FALSE, col.names = "SAMPLE")
+samples[, IDX := .I]
+pm.file <- if (file.exists("treat_popmap")) "treat_popmap" else
+             "analysis/diversity_statistics/nd/treat_popmap"
+popmap  <- fread(pm.file, header = FALSE, select = 1:2, col.names = c("SAMPLE", "GROUP"))
+popmap[, TREAT := gsub("-", "", GROUP)]
+popmap  <- popmap[TREAT %in% treat.lv]        # drops a header row, if there is one
+
+dp <- fread(file.path(dp.dir, "depth.10kb.sample.txt.gz"), header = FALSE,
+            col.names = c("CHROM", "BIN_START", "IDX", "MEAN_DP", "N_SITES"))
+dp <- dp[CHROM %in% names(chr.map)]
+dp <- merge(dp, samples, by = "IDX")
+dp <- merge(dp, popmap[, .(SAMPLE, TREAT)], by = "SAMPLE")
+dp[, nDP := MEAN_DP / median(MEAN_DP[N_SITES >= dp.min.sites]), by = SAMPLE]
+
+# treatment means per window, plus all samples together
+dp.win  <- dp[, .(nDP = mean(nDP)), by = .(CHROM, BIN_START, TREAT)]
+dp.wide <- dcast(dp.win, CHROM + BIN_START ~ TREAT, value.var = "nDP")
+dp.wide <- merge(dp.wide, dp[, .(ALL = mean(nDP)), by = .(CHROM, BIN_START)],
+                 by = c("CHROM", "BIN_START"))
+
+# genome-wide references, restricted to the windows the meadow plot uses
+used    <- unique(meadow[, .(CHROM, BIN_START)])
+ref.win <- dp.wide[used, on = .(CHROM, BIN_START), nomatch = 0]
+dp.cut  <- sapply(comps, function(tr)
+  unname(quantile(abs(log2(ref.win[[tr]] / ref.win[[meadow.ref]])), 0.99, na.rm = TRUE)))
+ref.cut <- quantile(ref.win[[meadow.ref]], 0.99, na.rm = TRUE)   # control depth, genome-wide
+
+cand <- meadow[CAND == TRUE, .(COMP = as.character(COMP), CHROM, BIN_START, FST, RATIO)]
+cand[, TRT := sub(" vs .*", "", COMP)]
+cand[, c("dp.ref", "dp.trt", "dp.all", "p.depth") := {
+  x <- dp[CHROM == .BY$CHROM & BIN_START == .BY$BIN_START]
+  a <- x[TREAT == TRT & !is.na(nDP), nDP]; b <- x[TREAT == meadow.ref & !is.na(nDP), nDP]
+  list(mean(b), mean(a), mean(x$nDP, na.rm = TRUE),
+       if (length(a) > 2 && length(b) > 2) wilcox.test(a, b, exact = FALSE)$p.value else NA_real_)
+}, by = .(COMP, TRT, CHROM, BIN_START)]
+cand[, `:=`(log2.dp  = log2(dp.trt / dp.ref),
+            CNV.TRT  = abs(log2(dp.trt / dp.ref)) > dp.cut[TRT] & p.depth < 0.01,
+            HIGH.REF = dp.ref > ref.cut)]   # control raised too: shared paralog, not a treatment CNV
+
+# group candidate windows into regions (stacks), per comparison
+setorder(cand, COMP, CHROM, BIN_START)
+cand[, REGION := paste(COMP, CHROM,
+                       cumsum(c(TRUE, diff(BIN_START) > dp.gap))), by = .(COMP, CHROM)]
+regions <- cand[, .(windows   = .N,
+                    start     = min(BIN_START), end = max(BIN_START) + meadow.win - 1,
+                    max.FST   = max(FST),
+                    log2.Ho   = mean(RATIO[is.finite(RATIO)]),
+                    dp.ref    = mean(dp.ref), dp.trt = mean(dp.trt), dp.all = mean(dp.all),
+                    log2.dp   = mean(log2.dp),
+                    cnv.trt   = sum(CNV.TRT, na.rm = TRUE),
+                    high.ref  = sum(HIGH.REF, na.rm = TRUE)),
+                by = .(REGION, COMP, CHROM)][windows >= dp.min.run]
+regions[, CHR := chr.map[CHROM]]
+regions[, REGION := NULL]
+regions
+
+cat(sprintf("Genome-wide 99%% |log2 depth ratio|: %s;  99%% control depth: %.2fx\n",
+            paste(names(dp.cut), round(dp.cut, 2), sep = " ", collapse = ", "), ref.cut))
+
+fwrite(cand,    "analysis/FST/pairwise/meadow_candidate_depth.csv")
+fwrite(regions, "analysis/FST/pairwise/meadow_region_depth.csv")
+```
+
+Reading the table (counts are windows in the region): `log2.dp` near 0 with `dp.ref` near 1 means
+the H~o~ signal is not a mapping artefact. `cnv.trt` > 0, with `log2.dp` about +0.6 (1.5x) and
+`dp.ref` near 1, points to a CNV carried in that treatment. `high.ref` > 0 means the control is
+raised too, which points to a paralog collapsed in every sample.
+
+```{r}
+if (nrow(regions)) {
+  reg <- regions[, .(CHROM, CHR, COMP, start, end,
+                     lo = pmax(0, start - dp.pad), hi = end + dp.pad)]
+  reg[, LAB := sprintf("Chr %s  %.2f-%.2f Mb\n%s", CHR, start / 1e6, end / 1e6, COMP)]
+  trk <- rbindlist(lapply(seq_len(nrow(reg)), function(i)
+    dp.win[CHROM == reg$CHROM[i] & BIN_START >= reg$lo[i] & BIN_START <= reg$hi[i]][
+      , LAB := reg$LAB[i]]))
+  trk[, TREAT := factor(TREAT, levels = treat.lv)]
+
+  depth.plot <- ggplot(trk, aes((BIN_START + meadow.win / 2) / 1e6, nDP, colour = TREAT)) +
+    geom_rect(data = reg, aes(xmin = start / 1e6, xmax = end / 1e6, ymin = -Inf, ymax = Inf),
+              inherit.aes = FALSE, fill = "grey90") +
+    geom_hline(yintercept = 1, colour = "grey60", linewidth = 0.3) +
+    geom_hline(yintercept = c(1.5, 2), colour = "grey60", linewidth = 0.3, linetype = "dashed") +
+    geom_line(linewidth = 0.5) +
+    scale_colour_manual(values = setNames(col_pal, treat.lv), name = "Treatment") +
+    facet_wrap(~ LAB, scales = "free_x") +
+    labs(x = "Position (Mb)", y = "Normalised read depth") +
+    theme(strip.background = element_blank(), strip.text = element_text(size = 8))
+
+  open.png("figures/Figure.S.meadow.depth.png", width = 10,
+           height = 2.6 * ceiling(nrow(reg) / 3), res = 300)
+  print(depth.plot)
+  invisible(dev.off())
+}
 ```
 
 # Gene Ontology Enrichment Analysis — Combined Outliers (LFMM2 ∪ OutFLANK)
