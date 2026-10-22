@@ -2015,24 +2015,21 @@ if (nrow(regions)) {
 }
 ```
 
-## Family structure and the chr 7 haplotype block
+## Supplement: relatedness and the chr 7 haplotype block
 
-All animals came from one mass spawn, but the Figure 1 PCA shows tight, discrete clusters
-typical of full-sib families, and these may not be spread evenly across treatments. If they
-are not, a treatment difference at a locus can reflect which families ended up in which
-treatment rather than selection. This section (1) identifies families from KING kinship and
-tests whether family membership is independent of treatment, and (2) runs a local PCA over
-the CONROD chr 7 stacks (NC_035786.1, 0.4–14.8 Mb) to tell the two explanations apart:
+All animals came from one mass spawn. The Figure 1 PCA shows tight clusters typical of a
+cohort from few parents, so this section checks (1) whether relatedness is spread evenly
+across treatments and (2) what drives the CONROD H~o~/H~e~ stacks on chr 7 (NC_035786.1,
+0.4–14.8 Mb) in Figure 3.
 
-* **Inversion (or other recombination-suppressed haplotype):** PC1 splits all animals into
-  three groups (two homozygotes and the heterozygote), the middle group has the highest
-  heterozygosity, and the groups cut across families, because arrangements segregate within
-  full-sib families.
-* **Family structure:** the PC1 groups line up with family IDs, without the three-group
-  heterozygosity pattern.
-
-A sliding-window scan along chr 7 shows where the local structure starts and stops
-(candidate breakpoints).
+* **Relatedness.** Mean KING kinship among animals in the same treatment, compared with
+  9,999 random relabellings. Families are not called from a kinship cut-off: in a cohort this
+  related, first-degree links chain most animals into one connected group.
+* **Chr 7 block.** A local PCA across the block. The tight, low-heterozygosity cluster on PC1
+  is scored as non-carriers; everyone else carries the divergent haplotype. Carrier counts are
+  then compared among treatments. A sliding-window scan along chr 7 shows how far the block's
+  structure extends. Sharp edges would suggest an inversion. A gradual decay over tens of Mb
+  fits parental haplotypes that have had only one generation of recombination.
 
 ```{bash, eval=FALSE}
 source activate ROD_CADO
@@ -2049,7 +2046,7 @@ plink2 --bfile $BF --allow-extra-chr --chr NC_035786.1 --from-bp 400000 --to-bp 
 plink2 --bfile $BF --allow-extra-chr --chr NC_035786.1 --from-bp 400000 --to-bp 14800000 \
   --maf 0.05 --het --out chr7_block
 
-# 2 Mb windows along all of chr 7, for breakpoints
+# 2 Mb windows along all of chr 7, for the block's extent
 mkdir -p chr7_windows
 for s in $(seq 0 2000000 56000000); do
   plink2 --bfile $BF --allow-extra-chr --chr NC_035786.1 --from-bp $((s+1)) --to-bp $((s+2000000)) \
@@ -2058,7 +2055,6 @@ done
 ```
 
 ```{r}
-fam.kin   <- 0.177    # KING kinship: >= this is first degree (full sib / parent-offspring)
 fam.dir   <- "analysis/family"
 blk.start <- 400000; blk.end <- 14800000
 
@@ -2070,70 +2066,47 @@ if (exists("popmap") && all(ids %in% popmap$SAMPLE))   # cross-check against tre
 
 kin <- fread(file.path(fam.dir, "king.kin0"))
 setnames(kin, sub("^#", "", names(kin)))
-
-# full-sib families = connected components of first-degree pairs
-parent <- setNames(ids, ids)
-find   <- function(x) { while (parent[[x]] != x) x <- parent[[x]]; x }
-for (i in which(kin$KINSHIP >= fam.kin)) {
-  a <- find(kin$IID1[i]); b <- find(kin$IID2[i]); if (a != b) parent[[b]] <- a
-}
-smp[, root := vapply(IID, find, "")]
-smp[, fam.n := .N, by = root]
-fam.ids <- smp[fam.n > 1, .N, by = root][order(-N), root]
-smp[, FAMILY := ifelse(fam.n > 1, paste0("F", match(root, fam.ids)), "unassigned")]
-smp[, FAMILY := factor(FAMILY, levels = c(paste0("F", seq_along(fam.ids)), "unassigned"))]
-
-fam.tab <- table(smp$FAMILY, smp$TREAT)
-fam.tab
-fam.test <- fisher.test(fam.tab, simulate.p.value = TRUE, B = 1e5)
-fam.test
-
-# second test that does not depend on the 0.177 cut: mean kinship within treatments vs
-# label permutation
 K <- matrix(0, length(ids), length(ids), dimnames = list(ids, ids))
 K[cbind(kin$IID1, kin$IID2)] <- kin$KINSHIP; K <- K + t(K)
+
 within.kin <- function(lab) { same <- outer(lab, lab, "=="); mean(K[same & upper.tri(K)]) }
+set.seed(1)
 obs.kin  <- within.kin(smp$TREAT)
 perm.kin <- replicate(9999, within.kin(sample(smp$TREAT)))
 kin.p    <- (sum(perm.kin >= obs.kin) + 1) / (length(perm.kin) + 1)
-smp[, .(families = uniqueN(FAMILY[FAMILY != "unassigned"]),
-        in.family = sum(FAMILY != "unassigned"),
-        largest   = max(table(droplevels(FAMILY[FAMILY != "unassigned"])), 0)), by = TREAT]
-cat(sprintf("Mean within-treatment kinship %.4f; permutation p = %.4f\n", obs.kin, kin.p))
+cat(sprintf("Mean kinship, all pairs %.4f; within treatments %.4f; permutation p = %.4f\n",
+            mean(K[upper.tri(K)]), obs.kin, kin.p))
 ```
 
 ```{r}
-# local PCA across the chr 7 block
 pc  <- fread(file.path(fam.dir, "chr7_block.eigenvec")); setnames(pc, sub("^#", "", names(pc)))
 ev  <- scan(file.path(fam.dir, "chr7_block.eigenval"), quiet = TRUE)
 het <- fread(file.path(fam.dir, "chr7_block.het"));     setnames(het, sub("^#", "", names(het)))
 het[, HET := 1 - `O(HOM)` / OBS_CT]
 blk <- merge(smp, pc[, .(IID, PC1, PC2)], by = "IID")
 blk <- merge(blk, het[, .(IID, HET)], by = "IID")
-
-set.seed(1)
-km  <- kmeans(blk$PC1, centers = 3, nstart = 50)
-ord <- order(km$centers[, 1])                    # groups 0 / 1 / 2 along PC1
-blk[, GROUP := factor(match(km$cluster, ord) - 1)]
-
-# inversion check: the middle group should be the most heterozygous
-blk[, .(n = .N, PC1 = mean(PC1), HET = mean(HET)), by = GROUP][order(GROUP)]
 cat(sprintf("PC1 explains %.1f%% of the block's variance (eigenvalue share, first 5 PCs)\n",
             100 * ev[1] / sum(ev)))
 
-grp.tab <- table(blk$GROUP, blk$TREAT); grp.tab
-fisher.test(grp.tab, simulate.p.value = TRUE, B = 1e5)
+# Three clusters on PC1; the tightest one (smallest PC1 SD) is the non-carrier homozygote
+# class, and the other two are carriers. k = 2 puts the boundary near PC1 = 0 and calls
+# some high-heterozygosity animals non-carriers. Choosing by spread, not by sign, keeps this
+# independent of PC1's arbitrary orientation.
+set.seed(1)
+km    <- kmeans(blk$PC1, centers = 3, nstart = 50)
+sds   <- tapply(blk$PC1, km$cluster, sd)
+blk[, CARRIER := factor(ifelse(km$cluster == as.integer(names(which.min(sds))),
+                               "non-carrier", "carrier"),
+                        levels = c("non-carrier", "carrier"))]
+blk[, .(n = .N, PC1 = mean(PC1), HET = mean(HET)), by = CARRIER]
 
-# arrangement frequency per treatment, scoring group 2 as the alternative arrangement
-blk[, .(freq.alt = (sum(GROUP == "1") + 2 * sum(GROUP == "2")) / (2 * .N)), by = TREAT]
+car.tab <- table(blk$CARRIER, blk$TREAT); car.tab
+fisher.test(car.tab)                                        # all four treatments
+car.rod <- cbind(CONROD = car.tab[, "CONROD"],
+                 others = rowSums(car.tab[, colnames(car.tab) != "CONROD", drop = FALSE]))
+fisher.test(car.rod)   # post hoc: the region was chosen because CONROD stood out in Figure 3
 
-# do the groups cut across families (inversion) or line up with them (family structure)?
-fam.grp <- table(droplevels(blk[FAMILY != "unassigned"]$FAMILY),
-                 blk[FAMILY != "unassigned"]$GROUP); fam.grp
-cat(sprintf("Families with >1 group: %d of %d\n",
-            sum(rowSums(fam.grp > 0) > 1), nrow(fam.grp)))
-
-# sliding windows: how well does each window's PC1 track the block PC1?
+# how far along chr 7 does the block's structure reach?
 win <- rbindlist(lapply(list.files(file.path(fam.dir, "chr7_windows"), "\\.eigenvec$",
                                    full.names = TRUE), function(f) {
   w  <- fread(f); setnames(w, sub("^#", "", names(w)))
@@ -2147,25 +2120,27 @@ win
 ```
 
 ```{r}
-p.a <- ggplot(blk, aes(PC1, PC2, colour = TREAT, shape = GROUP)) +
+p.a <- ggplot(blk, aes(PC1, PC2, colour = TREAT, shape = CARRIER)) +
   geom_point(size = 2.2) +
   scale_colour_manual(values = setNames(col_pal, treat.lv), name = "Treatment") +
-  labs(title = "Local PCA, chr 7 0.4-14.8 Mb", shape = "PC1 group")
-p.b <- ggplot(blk, aes(PC1, HET, colour = TREAT)) +
+  scale_shape_manual(values = c("non-carrier" = 16, carrier = 17), name = NULL) +
+  labs(title = "Local PCA, chr 7 0.4-14.8 Mb")
+p.b <- ggplot(blk, aes(PC1, HET, colour = TREAT, shape = CARRIER)) +
   geom_point(size = 2.2) +
   scale_colour_manual(values = setNames(col_pal, treat.lv), guide = "none") +
-  labs(y = "Heterozygosity in block", title = "Inversion: hump in the middle group")
+  scale_shape_manual(values = c("non-carrier" = 16, carrier = 17), guide = "none") +
+  labs(y = "Heterozygosity in block", title = "Heterozygosity along PC1")
 p.c <- ggplot(win, aes((start + 1e6) / 1e6, r)) +
   annotate("rect", xmin = blk.start / 1e6, xmax = blk.end / 1e6, ymin = -Inf, ymax = Inf,
            fill = "grey90") +
   geom_line() + geom_point(size = 1.2) + ylim(0, 1) +
   labs(x = "chr 7 position (Mb)", y = "|r| window PC1 vs block PC1",
        title = "Extent of the block (grey = local-PCA span)")
-p.d <- ggplot(smp, aes(FAMILY, fill = TREAT)) +
-  geom_bar() +
-  scale_fill_manual(values = setNames(col_pal, treat.lv), guide = "none") +
-  labs(x = NULL, y = "Animals", title = sprintf("KING families (Fisher p = %.3g)", fam.test$p.value)) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+p.d <- ggplot(data.frame(perm.kin), aes(perm.kin)) +
+  geom_histogram(bins = 40, fill = "grey70") +
+  geom_vline(xintercept = obs.kin, colour = "black", linewidth = 0.6) +
+  labs(x = "Mean within-treatment kinship (KING)", y = "Permutations",
+       title = sprintf("Relatedness within treatments (p = %.2f)", kin.p))
 
 open.png("figures/Figure.S.family.chr7.png", width = 11, height = 8, res = 300)
 print((p.a + p.b) / (p.c + p.d) + plot_annotation(tag_levels = "A"))
@@ -2174,14 +2149,16 @@ invisible(dev.off())
 
 Reading it:
 
-* **Family table / Fisher p and the kinship permutation.** If p is small, family composition
-  differs among treatments. Then every treatment contrast in Figures 2 and 3 needs the caveat,
-  and the strongest loci should be re-tested with family as a covariate.
-* **Panels A and B.** Three PC1 groups with a heterozygosity hump in the middle, and most
-  families containing more than one group, point to an inversion. Groups that line up with
-  families point to family structure.
-* **Panel C.** A high |r| plateau that falls off sharply marks the block's ends. Inversion
-  breakpoints give sharp edges; family haplotypes fade out gradually with recombination.
+* **Panel D.** The observed line inside the permutation distribution means relatedness is
+  spread evenly across treatments, so treatment contrasts are not confounded by family.
+* **Panels A–B.** A tight low-heterozygosity cluster (non-carriers), with carriers spread
+  along PC1 at higher heterozygosity. Two homozygous carriers would sit at the far end of PC1
+  with low heterozygosity.
+* **Panel C.** A gradual decay over tens of Mb fits parental haplotypes that have had one
+  generation of recombination, and argues against an inversion. Because the block is this
+  long, a carrier-frequency difference cannot be localised to a gene.
+* **Carrier test.** The CONROD-versus-others comparison is post hoc (the region was chosen
+  because CONROD stood out), so report it as descriptive.
 
 # Gene Ontology Enrichment Analysis — Combined Outliers (LFMM2 ∪ OutFLANK)
 Original analysis by Amy Zyck, edits by JBP
