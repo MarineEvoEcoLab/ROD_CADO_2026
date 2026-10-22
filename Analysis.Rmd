@@ -2015,6 +2015,174 @@ if (nrow(regions)) {
 }
 ```
 
+## Family structure and the chr 7 haplotype block
+
+All animals came from one mass spawn, but the Figure 1 PCA shows tight, discrete clusters
+typical of full-sib families, and these may not be spread evenly across treatments. If they
+are not, a treatment difference at a locus can reflect which families ended up in which
+treatment rather than selection. This section (1) identifies families from KING kinship and
+tests whether family membership is independent of treatment, and (2) runs a local PCA over
+the CONROD chr 7 stacks (NC_035786.1, 0.4–14.8 Mb) to tell the two explanations apart:
+
+* **Inversion (or other recombination-suppressed haplotype):** PC1 splits all animals into
+  three groups (two homozygotes and the heterozygote), the middle group has the highest
+  heterozygosity, and the groups cut across families, because arrangements segregate within
+  full-sib families.
+* **Family structure:** the PC1 groups line up with family IDs, without the three-group
+  heterozygosity pattern.
+
+A sliding-window scan along chr 7 shows where the local structure starts and stops
+(candidate breakpoints).
+
+```{bash, eval=FALSE}
+source activate ROD_CADO
+mkdir -p ./analysis/family
+cd ./analysis/family
+BF=../raw.vcf/filtered/TRSdp10g1.FIL
+
+# pairwise KING kinship, all pairs (80 samples -> 3,160 rows)
+plink2 --bfile $BF --allow-extra-chr --maf 0.05 --make-king-table --out king
+
+# local PCA and per-sample heterozygosity across the chr 7 block
+plink2 --bfile $BF --allow-extra-chr --chr NC_035786.1 --from-bp 400000 --to-bp 14800000 \
+  --maf 0.05 --pca 5 --out chr7_block
+plink2 --bfile $BF --allow-extra-chr --chr NC_035786.1 --from-bp 400000 --to-bp 14800000 \
+  --maf 0.05 --het --out chr7_block
+
+# 2 Mb windows along all of chr 7, for breakpoints
+mkdir -p chr7_windows
+for s in $(seq 0 2000000 56000000); do
+  plink2 --bfile $BF --allow-extra-chr --chr NC_035786.1 --from-bp $((s+1)) --to-bp $((s+2000000)) \
+    --maf 0.05 --pca 2 --out chr7_windows/w$s > /dev/null 2>&1 || true
+done
+```
+
+```{r}
+fam.kin   <- 0.177    # KING kinship: >= this is first degree (full sib / parent-offspring)
+fam.dir   <- "analysis/family"
+blk.start <- 400000; blk.end <- 14800000
+
+# sample order in the .fam matches poplist.names (20 per treatment), as in the PCA section
+ids <- fread("analysis/raw.vcf/filtered/TRSdp10g1.FIL.fam", header = FALSE)$V2
+smp <- data.table(IID = ids, TREAT = factor(poplist.names, levels = treat.lv))
+if (exists("popmap") && all(ids %in% popmap$SAMPLE))   # cross-check against treat_popmap
+  stopifnot(all(popmap[match(ids, SAMPLE), TREAT] == as.character(smp$TREAT)))
+
+kin <- fread(file.path(fam.dir, "king.kin0"))
+setnames(kin, sub("^#", "", names(kin)))
+
+# full-sib families = connected components of first-degree pairs
+parent <- setNames(ids, ids)
+find   <- function(x) { while (parent[[x]] != x) x <- parent[[x]]; x }
+for (i in which(kin$KINSHIP >= fam.kin)) {
+  a <- find(kin$IID1[i]); b <- find(kin$IID2[i]); if (a != b) parent[[b]] <- a
+}
+smp[, root := vapply(IID, find, "")]
+smp[, fam.n := .N, by = root]
+fam.ids <- smp[fam.n > 1, .N, by = root][order(-N), root]
+smp[, FAMILY := ifelse(fam.n > 1, paste0("F", match(root, fam.ids)), "unassigned")]
+smp[, FAMILY := factor(FAMILY, levels = c(paste0("F", seq_along(fam.ids)), "unassigned"))]
+
+fam.tab <- table(smp$FAMILY, smp$TREAT)
+fam.tab
+fam.test <- fisher.test(fam.tab, simulate.p.value = TRUE, B = 1e5)
+fam.test
+
+# second test that does not depend on the 0.177 cut: mean kinship within treatments vs
+# label permutation
+K <- matrix(0, length(ids), length(ids), dimnames = list(ids, ids))
+K[cbind(kin$IID1, kin$IID2)] <- kin$KINSHIP; K <- K + t(K)
+within.kin <- function(lab) { same <- outer(lab, lab, "=="); mean(K[same & upper.tri(K)]) }
+obs.kin  <- within.kin(smp$TREAT)
+perm.kin <- replicate(9999, within.kin(sample(smp$TREAT)))
+kin.p    <- (sum(perm.kin >= obs.kin) + 1) / (length(perm.kin) + 1)
+smp[, .(families = uniqueN(FAMILY[FAMILY != "unassigned"]),
+        in.family = sum(FAMILY != "unassigned"),
+        largest   = max(table(droplevels(FAMILY[FAMILY != "unassigned"])), 0)), by = TREAT]
+cat(sprintf("Mean within-treatment kinship %.4f; permutation p = %.4f\n", obs.kin, kin.p))
+```
+
+```{r}
+# local PCA across the chr 7 block
+pc  <- fread(file.path(fam.dir, "chr7_block.eigenvec")); setnames(pc, sub("^#", "", names(pc)))
+ev  <- scan(file.path(fam.dir, "chr7_block.eigenval"), quiet = TRUE)
+het <- fread(file.path(fam.dir, "chr7_block.het"));     setnames(het, sub("^#", "", names(het)))
+het[, HET := 1 - `O(HOM)` / OBS_CT]
+blk <- merge(smp, pc[, .(IID, PC1, PC2)], by = "IID")
+blk <- merge(blk, het[, .(IID, HET)], by = "IID")
+
+set.seed(1)
+km  <- kmeans(blk$PC1, centers = 3, nstart = 50)
+ord <- order(km$centers[, 1])                    # groups 0 / 1 / 2 along PC1
+blk[, GROUP := factor(match(km$cluster, ord) - 1)]
+
+# inversion check: the middle group should be the most heterozygous
+blk[, .(n = .N, PC1 = mean(PC1), HET = mean(HET)), by = GROUP][order(GROUP)]
+cat(sprintf("PC1 explains %.1f%% of the block's variance (eigenvalue share, first 5 PCs)\n",
+            100 * ev[1] / sum(ev)))
+
+grp.tab <- table(blk$GROUP, blk$TREAT); grp.tab
+fisher.test(grp.tab, simulate.p.value = TRUE, B = 1e5)
+
+# arrangement frequency per treatment, scoring group 2 as the alternative arrangement
+blk[, .(freq.alt = (sum(GROUP == "1") + 2 * sum(GROUP == "2")) / (2 * .N)), by = TREAT]
+
+# do the groups cut across families (inversion) or line up with them (family structure)?
+fam.grp <- table(droplevels(blk[FAMILY != "unassigned"]$FAMILY),
+                 blk[FAMILY != "unassigned"]$GROUP); fam.grp
+cat(sprintf("Families with >1 group: %d of %d\n",
+            sum(rowSums(fam.grp > 0) > 1), nrow(fam.grp)))
+
+# sliding windows: how well does each window's PC1 track the block PC1?
+win <- rbindlist(lapply(list.files(file.path(fam.dir, "chr7_windows"), "\\.eigenvec$",
+                                   full.names = TRUE), function(f) {
+  w  <- fread(f); setnames(w, sub("^#", "", names(w)))
+  e  <- scan(sub("eigenvec$", "eigenval", f), quiet = TRUE)
+  m  <- merge(w[, .(IID, wPC1 = PC1)], blk[, .(IID, PC1)], by = "IID")
+  data.table(start = as.numeric(sub("^w", "", sub("\\.eigenvec$", "", basename(f)))),
+             r = abs(cor(m$wPC1, m$PC1)), pc1.share = e[1] / sum(e))
+}))
+setorder(win, start)
+win
+```
+
+```{r}
+p.a <- ggplot(blk, aes(PC1, PC2, colour = TREAT, shape = GROUP)) +
+  geom_point(size = 2.2) +
+  scale_colour_manual(values = setNames(col_pal, treat.lv), name = "Treatment") +
+  labs(title = "Local PCA, chr 7 0.4-14.8 Mb", shape = "PC1 group")
+p.b <- ggplot(blk, aes(PC1, HET, colour = TREAT)) +
+  geom_point(size = 2.2) +
+  scale_colour_manual(values = setNames(col_pal, treat.lv), guide = "none") +
+  labs(y = "Heterozygosity in block", title = "Inversion: hump in the middle group")
+p.c <- ggplot(win, aes((start + 1e6) / 1e6, r)) +
+  annotate("rect", xmin = blk.start / 1e6, xmax = blk.end / 1e6, ymin = -Inf, ymax = Inf,
+           fill = "grey90") +
+  geom_line() + geom_point(size = 1.2) + ylim(0, 1) +
+  labs(x = "chr 7 position (Mb)", y = "|r| window PC1 vs block PC1",
+       title = "Extent of the block (grey = local-PCA span)")
+p.d <- ggplot(smp, aes(FAMILY, fill = TREAT)) +
+  geom_bar() +
+  scale_fill_manual(values = setNames(col_pal, treat.lv), guide = "none") +
+  labs(x = NULL, y = "Animals", title = sprintf("KING families (Fisher p = %.3g)", fam.test$p.value)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+open.png("figures/Figure.S.family.chr7.png", width = 11, height = 8, res = 300)
+print((p.a + p.b) / (p.c + p.d) + plot_annotation(tag_levels = "A"))
+invisible(dev.off())
+```
+
+Reading it:
+
+* **Family table / Fisher p and the kinship permutation.** If p is small, family composition
+  differs among treatments. Then every treatment contrast in Figures 2 and 3 needs the caveat,
+  and the strongest loci should be re-tested with family as a covariate.
+* **Panels A and B.** Three PC1 groups with a heterozygosity hump in the middle, and most
+  families containing more than one group, point to an inversion. Groups that line up with
+  families point to family structure.
+* **Panel C.** A high |r| plateau that falls off sharply marks the block's ends. Inversion
+  breakpoints give sharp edges; family haplotypes fade out gradually with recombination.
+
 # Gene Ontology Enrichment Analysis — Combined Outliers (LFMM2 ∪ OutFLANK)
 Original analysis by Amy Zyck, edits by JBP
 
