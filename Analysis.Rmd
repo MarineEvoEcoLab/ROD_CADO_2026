@@ -1737,8 +1737,10 @@ Differences from the tutorial, and why:
   shifts genotype frequencies before it moves allele frequencies, and π is nearly flat across
   treatments here. `meadow.color = "PI"` gives the original π-ratio plot; `"FIS"` plots
   ΔF~IS~ (treatment − control) instead of a ratio.
-* **10 kb non-overlapping windows**, matching the π, H~o~ and Tajima's *D* windows already
-  computed above (tutorial: 15 kb windows, 5 kb step), so every statistic shares one grid.
+* **5 kb non-overlapping windows** (`meadow.win`; tutorial: 15 kb windows, 5 kb step). F~ST~,
+  π and H~o~ are recomputed on this grid in the chunk below, so the three statistics share one
+  grid. The genome-wide 10 kb π / H~o~ / Tajima's *D* windows used elsewhere are untouched.
+  Set `meadow.win <- 10000` (and `W=10000` in the bash chunk) to get the 10 kb version back.
 * **F~ST~ from VCFtools**, not pixy. pixy needs an all-sites VCF; F~ST~ is computed from
   variant sites either way, and this keeps it on the same filtered VCF as everything else.
 * **Shared colour scale across comparisons** (tutorial: one scale per comparison), so colour
@@ -1756,12 +1758,48 @@ mkdir -p ./analysis/FST/pairwise
 cd ./analysis/FST/pairwise
 
 # population files written in the Nucleotide diversity section
+# 10 kb version (files without a size tag); kept so meadow.win <- 10000 still works
 for t in str-con con-rod str-rod; do
   vcftools --gzvcf ../../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz \
     --weir-fst-pop ../../diversity_statistics/nd/con-con.txt \
     --weir-fst-pop ../../diversity_statistics/nd/$t.txt \
     --fst-window-size 10000 --fst-window-step 10000 \
     --out con-con_vs_$t &
+done
+wait
+```
+
+### Meadow grid at 5 kb: F~ST~, π and H~o~
+
+W must equal `meadow.win` in the Settings chunk. Outputs carry a `.5kb` tag so the 10 kb files
+are not overwritten. Uses the `*-treat.het` per-site files from the Heterozygosity section.
+
+```{bash, eval=FALSE}
+source activate ROD_CADO
+W=5000; TAG=$((W / 1000))kb
+VCF=../../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz
+
+cd ./analysis/FST/pairwise
+for t in str-con con-rod str-rod; do
+  vcftools --gzvcf $VCF \
+    --weir-fst-pop ../../diversity_statistics/nd/con-con.txt \
+    --weir-fst-pop ../../diversity_statistics/nd/$t.txt \
+    --fst-window-size $W --fst-window-step $W \
+    --out con-con_vs_$t.$TAG &
+done
+
+cd ../../diversity_statistics/nd
+for t in con-con str-con con-rod str-rod; do
+  bcftools view --threads 5 ../../raw.vcf/filtered/SNP.TRSdp10g1.FIL.vcf.gz -S $t.txt | \
+    vcftools --vcf - --window-pi $W --out $t.$TAG &
+done
+wait
+
+cd ../het
+bedtools makewindows -g ../../../other_files/genome.file -w $W | mawk '!/NC_007175.2/' > $TAG.bed
+for T in CONCON CONROD STRCON STRROD; do
+  bedtools intersect -b $T-treat.het -a $TAG.bed -wa -wb | \
+    bedtools merge -d -1 -c 7,8 -o mean > $T.het.$TAG.bed &
 done
 wait
 ```
@@ -1776,7 +1814,8 @@ meadow.ref        <- "CONCON"  # denominator of every comparison
 meadow.q          <- 0.01      # tail used for both the FST and the ratio cut-offs
 meadow.min.snps   <- 10        # drop windows with fewer variant sites before any cut-off
 meadow.mark.tests <- TRUE      # ring windows that contain an LFMM2 / OutFLANK outlier
-meadow.win        <- 10000     # must match the bash chunk and the diversity windows
+meadow.win        <- 5000      # bp; must match W in the 5 kb bash chunk (10000 = original grid)
+meadow.tag        <- if (meadow.win == 10000) "" else paste0(".", meadow.win / 1000, "kb")
 ```
 
 ## Build the window table
@@ -1785,14 +1824,15 @@ meadow.win        <- 10000     # must match the bash chunk and the diversity win
 trt.file <- function(x) sub("^(...)(...)$", "\\1-\\2", tolower(x))   # STRROD -> str-rod
 comps    <- setdiff(treat.lv, meadow.ref)
 
-# Per-treatment diversity on the shared 10 kb grid, keyed on the 1-based window start
-# (VCFtools convention). The *.het.10kb.bed files are headerless bedtools output with
+# Per-treatment diversity on the shared meadow.win grid, keyed on the 1-based window start
+# (VCFtools convention). The *.het.<size>.bed files are headerless bedtools output with
 # 0-based starts: CHROM, start, end, expected het, observed het.
 div <- rbindlist(lapply(treat.lv, function(tr) {
-  h <- fread(paste0("analysis/diversity_statistics/het/", tr, ".het.10kb.bed"), header = FALSE,
+  h <- fread(paste0("analysis/diversity_statistics/het/", tr, ".het.",
+                    if (meadow.tag == "") "10kb" else sub("^\\.", "", meadow.tag), ".bed"), header = FALSE,
              col.names = c("CHROM", "BIN_START", "BIN_END", "EXP_HET", "OBS_HET"))
   h[, BIN_START := BIN_START + 1L]
-  p <- fread(paste0("analysis/diversity_statistics/nd/", trt.file(tr), ".windowed.pi"))
+  p <- fread(paste0("analysis/diversity_statistics/nd/", trt.file(tr), meadow.tag, ".windowed.pi"))
   d <- merge(h[, .(CHROM, BIN_START, EXP_HET, OBS_HET)], p[, .(CHROM, BIN_START, PI)],
              by = c("CHROM", "BIN_START"), all = TRUE)
   d[, `:=`(TREAT = tr, FIS = ifelse(EXP_HET > 0, 1 - OBS_HET / EXP_HET, NA_real_))]
@@ -1802,8 +1842,8 @@ stat.col <- c(HO = "OBS_HET", PI = "PI", FIS = "FIS")[[meadow.color]]
 ref <- div[TREAT == meadow.ref, .(CHROM, BIN_START, ref.val = get(stat.col))]
 
 meadow <- rbindlist(lapply(comps, function(tr) {
-  f <- fread(sprintf("analysis/FST/pairwise/%s_vs_%s.windowed.weir.fst",
-                     trt.file(meadow.ref), trt.file(tr)))
+  f <- fread(sprintf("analysis/FST/pairwise/%s_vs_%s%s.windowed.weir.fst",
+                     trt.file(meadow.ref), trt.file(tr), meadow.tag))
   d <- merge(f[, .(CHROM, BIN_START, N_VARIANTS, FST = WEIGHTED_FST)],
              div[TREAT == tr, .(CHROM, BIN_START, trt.val = get(stat.col))],
              by = c("CHROM", "BIN_START"))
@@ -1861,9 +1901,9 @@ fwrite(meadow[CAND == TRUE, .(COMP, CHROM, BIN_START, BIN_END = BIN_START + mead
 lim <- quantile(abs(meadow$RATIO[!meadow$INF]), 0.995, na.rm = TRUE)
 meadow[, RATIO.plot := pmax(pmin(RATIO, lim), -lim)]   # infinite ratios plot at the ends
 
-leg.title <- c(HO  = "log<sub>2</sub> H<sub>o</sub> ratio<br>(treatment / control)",
-               PI  = "log<sub>2</sub> &pi; ratio<br>(treatment / control)",
-               FIS = "&Delta;F<sub>IS</sub><br>(treatment - control)")[[meadow.color]]
+leg.title <- c(HO  = "log<sub>2</sub> H<sub>o</sub> ratio (treatment / control)",
+               PI  = "log<sub>2</sub> &pi; ratio (treatment / control)",
+               FIS = "&Delta;F<sub>IS</sub> (treatment - control)")[[meadow.color]]
 
 meadow.plot <- ggplot(meadow, aes(MID, FST, colour = RATIO.plot)) +
   geom_point(data = meadow[CAND == FALSE], size = 0.35, alpha = 0.35) +
@@ -1876,8 +1916,13 @@ meadow.plot <- ggplot(meadow, aes(MID, FST, colour = RATIO.plot)) +
                          midpoint = 0, limits = c(-lim, lim), name = leg.title) +
   facet_grid(COMP ~ CHR, scales = "free_x", space = "free_x", switch = "x") +
   scale_x_continuous(breaks = NULL, expand = c(0.01, 0)) +
-  labs(x = "Chromosome", y = "Weighted F<sub>ST</sub> (10 kb)") +
-  theme(panel.spacing.x = unit(0.5, "mm"), panel.spacing.y = unit(3, "mm"),
+  guides(colour = guide_colourbar(title.position = "left", title.vjust = 0.8,
+                                  barwidth = unit(7, "cm"), barheight = unit(3, "mm"))) +
+  labs(x = "Chromosome",
+       y = sprintf("Weighted F<sub>ST</sub> (%g kb)", meadow.win / 1000)) +
+  theme(legend.position = "bottom", legend.direction = "horizontal",
+        legend.margin = margin(0, 0, 0, 0), legend.box.spacing = unit(2, "mm"),
+        panel.spacing.x = unit(0.5, "mm"), panel.spacing.y = unit(3, "mm"),
         strip.placement = "outside", strip.background = element_blank(),
         strip.text.y = element_text(angle = 0, hjust = 0),
         axis.title.y = ggtext::element_markdown(),
@@ -1926,6 +1971,8 @@ dp.gap     <- 50000    # bp; candidate windows closer than this join the same re
 dp.pad     <- 100000   # bp of flank drawn either side of a region
 dp.min.sites <- 5      # sites with a DP call needed for a window to count toward a sample's median
 dp.dir     <- "analysis/diversity_statistics/depth"
+dp.bin     <- 10000    # depth window (W in the bash chunk above); independent of meadow.win
+to.dp.bin  <- function(x) (x - 1L) %/% dp.bin * dp.bin + 1L   # meadow window start -> depth bin
 
 samples <- fread(file.path(dp.dir, "samples.txt"), header = FALSE, col.names = "SAMPLE")
 samples[, IDX := .I]
@@ -1949,7 +1996,7 @@ dp.wide <- merge(dp.wide, dp[, .(ALL = mean(nDP)), by = .(CHROM, BIN_START)],
                  by = c("CHROM", "BIN_START"))
 
 # genome-wide references, restricted to the windows the meadow plot uses
-used    <- unique(meadow[, .(CHROM, BIN_START)])
+used    <- unique(meadow[, .(CHROM, BIN_START = to.dp.bin(BIN_START))])
 ref.win <- dp.wide[used, on = .(CHROM, BIN_START), nomatch = 0]
 dp.cut  <- sapply(comps, function(tr)
   unname(quantile(abs(log2(ref.win[[tr]] / ref.win[[meadow.ref]])), 0.99, na.rm = TRUE)))
@@ -1958,7 +2005,7 @@ ref.cut <- quantile(ref.win[[meadow.ref]], 0.99, na.rm = TRUE)   # control depth
 cand <- meadow[CAND == TRUE, .(COMP = as.character(COMP), CHROM, BIN_START, FST, RATIO)]
 cand[, TRT := sub(" vs .*", "", COMP)]
 cand[, c("dp.ref", "dp.trt", "dp.all", "p.depth") := {
-  x <- dp[CHROM == .BY$CHROM & BIN_START == .BY$BIN_START]
+  x <- dp[CHROM == .BY$CHROM & BIN_START == to.dp.bin(.BY$BIN_START)]
   a <- x[TREAT == TRT & !is.na(nDP), nDP]; b <- x[TREAT == meadow.ref & !is.na(nDP), nDP]
   list(mean(b), mean(a), mean(x$nDP, na.rm = TRUE),
        if (length(a) > 2 && length(b) > 2) wilcox.test(a, b, exact = FALSE)$p.value else NA_real_)
@@ -2006,7 +2053,7 @@ if (nrow(regions)) {
       , LAB := reg$LAB[i]]))
   trk[, TREAT := factor(TREAT, levels = treat.lv)]
 
-  depth.plot <- ggplot(trk, aes((BIN_START + meadow.win / 2) / 1e6, nDP, colour = TREAT)) +
+  depth.plot <- ggplot(trk, aes((BIN_START + dp.bin / 2) / 1e6, nDP, colour = TREAT)) +
     geom_rect(data = reg, aes(xmin = start / 1e6, xmax = end / 1e6, ymin = -Inf, ymax = Inf),
               inherit.aes = FALSE, fill = "grey90") +
     geom_hline(yintercept = 1, colour = "grey60", linewidth = 0.3) +
@@ -2168,6 +2215,52 @@ Reading it:
   long, a carrier-frequency difference cannot be localised to a gene.
 * **Carrier test.** The CONROD-versus-others comparison is post hoc (the region was chosen
   because CONROD stood out), so report it as descriptive.
+
+## Supplement: PCA of outlier loci
+
+Four panels, one per outlier set: (A) LFMM2 (all three models), (B) OutFLANK, (C) union,
+(D) LFMM2 ∩ OutFLANK. Reuses the dudi.pca and PERMANOVA objects from the
+*Validate … with PCA and PERMANOVA* sections above; nothing is recomputed.
+
+Axis % here is PC eigenvalue / total inertia (`$eig`). The single-set plots above divide by
+PC1 + PC2 only, which overstates both axes. These loci were selected for treatment
+association, so separation is expected: the legend should call the PERMANOVA descriptive.
+
+```{r}
+pca.sets <- list(
+  "A  LFMM2"            = list(pca = out_lfmm_all_pca, perm = permanova_result_lfmm_all),
+  "B  OutFLANK"         = list(pca = out_outflank_pca, perm = permanova_result_outflank),
+  "C  LFMM2 ∪ OutFLANK" = list(pca = out_combined_pca, perm = permanova_result_combined),
+  "D  LFMM2 ∩ OutFLANK" = list(pca = out_overlap_pca,  perm = permanova_result_overlap)
+)
+n.snps <- c(nLoc(rad_out_lfmm_all.filt), nLoc(rad_out_outflank.filt),
+            nLoc(rad_out_combined.filt), nLoc(rad_out_overlap.filt))
+
+pca.panel <- function(x, title, n) {
+  pve <- 100 * x$pca$eig / sum(x$pca$eig)
+  df  <- data.frame(PC1 = x$pca$li[, 1], PC2 = x$pca$li[, 2],
+                    Treatment = factor(poplist.names, levels = c("CONCON", "STRCON", "CONROD", "STRROD")))
+  lab <- sprintf("%d SNPs\nPERMANOVA R² = %.2f, p = %s", n,
+                 x$perm$R2[1], format(x$perm$`Pr(>F)`[1], digits = 2))
+  ggplot(df, aes(PC1, PC2, colour = Treatment)) +
+    geom_point(size = 1.8, alpha = 0.8) +
+    stat_ellipse(linewidth = 0.4) +
+    scale_colour_manual(values = col_pal) +
+    annotate("text", x = -Inf, y = Inf, label = lab, hjust = -0.05, vjust = 1.2, size = 2.8) +
+    labs(title = title,
+         x = sprintf("PC1 (%.1f%%)", pve[1]), y = sprintf("PC2 (%.1f%%)", pve[2])) +
+    theme_classic(base_size = 10) +
+    theme(plot.title = element_text(face = "bold", size = 10))
+}
+
+fig.s.pca <- wrap_plots(Map(pca.panel, pca.sets, names(pca.sets), n.snps), ncol = 2) +
+  plot_layout(guides = "collect") & theme(legend.position = "bottom")
+
+open.png("figures/Figure.S.outlier.PCA.png", width = 8, height = 8, res = 300)
+print(fig.s.pca)
+invisible(dev.off())
+fig.s.pca
+```
 
 # Gene Ontology Enrichment Analysis — Combined Outliers (LFMM2 ∪ OutFLANK)
 Original analysis by Amy Zyck, edits by JBP
