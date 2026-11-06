@@ -677,7 +677,7 @@ plink2 --bfile ../raw.vcf/filtered/TRSdp10g1.FIL --make-bed --allow-extra-chr --
 rds <- snp_readBed("./analysis/raw.vcf/filtered/TRSdp10g1.FIL.ALL.bed", backingfile = tempfile())
 ```
 
-```{r, eval = FALSE}
+```{r}
 full_bed <- snp_attach(rds)
 G <- full_bed$genotypes
 CHR <- full_bed$map$chromosome
@@ -685,13 +685,22 @@ POS <- full_bed$map$physical.pos
 NCORES <- nb_cores()
 ```
 
-```{r, eval=FALSE}
-svd <- snp_autoSVD(G, as.integer(factor(CHR)), POS, ncores = NCORES,min.mac =8,size=10)
+```{r}
+# Cached: autoSVD is slow. Named obj.svd so a missing object errors instead of
+# silently resolving to base::svd() (its "subset" attr was NULL -> 0 loci in OutFLANK).
+svd_file <- "./analysis/FST/autoSVD.rds"
+if (file.exists(svd_file)) {
+  obj.svd <- readRDS(svd_file)
+} else {
+  obj.svd <- snp_autoSVD(G, as.integer(factor(CHR)), POS, ncores = NCORES, min.mac = 8, size = 10)
+  saveRDS(obj.svd, svd_file)
+}
+stopifnot(length(attr(obj.svd, "subset")) > 0)
 ```
 
 ```{r, eval=FALSE}
-write(paste(CHR[attr(svd, "subset")],
-            POS[attr(svd, "subset")], sep='\t'),
+write(paste(CHR[attr(obj.svd, "subset")],
+            POS[attr(obj.svd, "subset")], sep='\t'),
       "./analysis/FST/ThinnedSNPs.maskedPCs.txt")
 ```
 
@@ -746,7 +755,7 @@ load("./analysis/FST/FST_data.RData")
 
 ```{r}
 
-out_trim <- OutFLANK(my_fst[attr(svd, which="subset"),], NumberOfSamples=4, qthreshold = 0.1, Hmin = 0.1)
+out_trim <- OutFLANK(my_fst[attr(obj.svd, which="subset"),], NumberOfSamples=4, qthreshold = 0.1, Hmin = 0.1)
 
 OutFLANKResultsPlotter(out_trim, withOutliers = TRUE,
                        NoCorr = TRUE, Hmin = 0.1, binwidth = 0.001, Zoom =
